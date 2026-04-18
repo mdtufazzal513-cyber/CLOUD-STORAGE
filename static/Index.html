@@ -33,10 +33,11 @@
                 <button onclick="document.getElementById('fileInput').click()" class="px-6 py-3 bg-blue-600 rounded-lg font-semibold hover:bg-blue-500 transition">Browse File</button>
             </div>
             
+            <!-- Progress & Status -->
             <div id="statusArea" class="hidden">
                 <p id="statusText" class="text-yellow-400 font-semibold mb-2">Uploading to Telegram... Please wait.</p>
                 <div class="w-full bg-gray-700 rounded-full h-2.5">
-                    <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 50%"></div>
+                    <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
                 </div>
             </div>
         </div>
@@ -58,11 +59,13 @@
             if(tab === 'files') loadFiles();
         }
 
+        // Upload Logic
         document.getElementById('fileInput').addEventListener('change', async function() {
             let file = this.files[0];
             if (!file) return;
 
             document.getElementById('statusArea').classList.remove('hidden');
+            document.getElementById('progressBar').style.width = '50%'; // Simulated progress
             document.getElementById('statusText').innerText = `Uploading: ${file.name}...`;
 
             let formData = new FormData();
@@ -86,6 +89,7 @@
             }
         });
 
+        // Load Files Logic
         async function loadFiles() {
             let fileList = document.getElementById('fileList');
             fileList.innerHTML = '<p class="text-gray-400">Loading your files...</p>';
