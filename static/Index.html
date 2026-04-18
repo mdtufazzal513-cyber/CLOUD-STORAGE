@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Cloud - Telegram Storage</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background: linear-gradient(135deg, #0f172a, #1e293b); color: white; min-height: 100vh; }
+        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .hidden { display: none; }
+    </style>
+</head>
+<body class="p-6">
+    <div class="max-w-4xl mx-auto">
+        <!-- Header / Navigation -->
+        <div class="flex justify-between items-center mb-8 glass p-4 rounded-xl shadow-lg">
+            <h1 class="text-2xl font-bold text-blue-400"><i class="fa-solid fa-cloud"></i> MyCloud</h1>
+            <div class="space-x-4">
+                <button onclick="showTab('upload')" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg transition">Upload</button>
+                <button onclick="showTab('files')" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition">My Files</button>
+            </div>
+        </div>
+
+        <!-- Upload Tab -->
+        <div id="uploadTab" class="glass p-10 rounded-2xl text-center shadow-2xl">
+            <h2 class="text-3xl font-semibold mb-6">Upload Files to Cloud</h2>
+            <div class="border-2 border-dashed border-gray-500 p-12 rounded-xl mb-6 hover:border-blue-400 transition">
+                <i class="fa-solid fa-file-arrow-up text-6xl text-gray-400 mb-4"></i>
+                <p class="text-gray-300 mb-4">Drag and drop your files here or click to browse</p>
+                <input type="file" id="fileInput" class="hidden">
+                <button onclick="document.getElementById('fileInput').click()" class="px-6 py-3 bg-blue-600 rounded-lg font-semibold hover:bg-blue-500 transition">Browse File</button>
+            </div>
+            
+            <!-- Progress & Status -->
+            <div id="statusArea" class="hidden">
+                <p id="statusText" class="text-yellow-400 font-semibold mb-2">Uploading to Telegram... Please wait.</p>
+                <div class="w-full bg-gray-700 rounded-full h-2.5">
+                    <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- My Files Tab -->
+        <div id="filesTab" class="hidden glass p-8 rounded-2xl shadow-2xl">
+            <h2 class="text-2xl font-semibold mb-6 border-b border-gray-600 pb-2">My Uploaded Files</h2>
+            <div id="fileList" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Files will load here via JavaScript -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showTab(tab) {
+            document.getElementById('uploadTab').classList.add('hidden');
+            document.getElementById('filesTab').classList.add('hidden');
+            document.getElementById(tab + 'Tab').classList.remove('hidden');
+            if(tab === 'files') loadFiles();
+        }
+
+        // Upload Logic
+        document.getElementById('fileInput').addEventListener('change', async function() {
+            let file = this.files[0];
+            if (!file) return;
+
+            document.getElementById('statusArea').classList.remove('hidden');
+            document.getElementById('progressBar').style.width = '50%'; // Simulated progress
+            document.getElementById('statusText').innerText = `Uploading: ${file.name}...`;
+
+            let formData = new FormData();
+            formData.append("file", file);
+
+            try {
+                let response = await fetch('/upload/', { method: 'POST', body: formData });
+                let result = await response.json();
+
+                if (response.ok) {
+                    document.getElementById('progressBar').style.width = '100%';
+                    document.getElementById('statusText').innerText = "Upload Successful!";
+                    document.getElementById('statusText').className = "text-green-400 font-semibold mb-2";
+                    setTimeout(() => { document.getElementById('statusArea').classList.add('hidden'); }, 3000);
+                } else {
+                    throw new Error("Upload Failed");
+                }
+            } catch (error) {
+                document.getElementById('statusText').innerText = "Error uploading file!";
+                document.getElementById('statusText').className = "text-red-400 font-semibold mb-2";
+            }
+        });
+
+        // Load Files Logic
+        async function loadFiles() {
+            let fileList = document.getElementById('fileList');
+            fileList.innerHTML = '<p class="text-gray-400">Loading your files...</p>';
+            
+            try {
+                let response = await fetch('/files/');
+                let files = await response.json();
+                fileList.innerHTML = '';
+
+                if(files.length === 0) {
+                    fileList.innerHTML = '<p class="text-gray-400">No files uploaded yet.</p>';
+                    return;
+                }
+
+                files.forEach(f => {
+                    let sizeMB = (f.file_size / (1024 * 1024)).toFixed(2);
+                    fileList.innerHTML += `
+                        <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center border border-gray-700 hover:border-blue-500 transition">
+                            <div class="overflow-hidden">
+                                <p class="font-semibold truncate w-48" title="${f.file_name}">${f.file_name}</p>
+                                <p class="text-sm text-gray-400">${sizeMB} MB</p>
+                            </div>
+                            <a href="/download/${f.message_id}" class="bg-green-600 p-2 rounded-lg hover:bg-green-500 transition" title="Download">
+                                <i class="fa-solid fa-download"></i>
+                            </a>
+                        </div>
+                    `;
+                });
+            } catch(e) {
+                fileList.innerHTML = '<p class="text-red-400">Failed to load files.</p>';
+            }
+        }
+    </script>
+</body>
+</html>
