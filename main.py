@@ -10,8 +10,8 @@ app = FastAPI()
 API_ID = int(os.getenv("API_ID", "33445387"))
 API_HASH = os.getenv("API_HASH", "5b1badf6d0f44c940a2263cef28d6689").strip()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8781052287:AAEYTaE5Cj1sR4dokfsdhlTKXg1t5Kgejd0").strip()
-SESSION_STRING = os.getenv("SESSION_STRING", "").strip()
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-100")) # আপনার অরিজিনাল চ্যানেল আইডি দিন
+SESSION_STRING = os.getenv("SESSION_STRING", "BQH-VgsAZC_puXAZ6e5eDzWyH0COcjwPDqkkQ77m-U3KiD5FbuYXhVfXOa7LUS-dG29vF_QmY6RIzvNyquYX0R225jb5KvUlPH37XyXZwFbzykZFwvlsW8vfBWe3lnRe1Y-CzpSdC1oHxMNfAQmDIXhizTGqyI79RTOlOnnvD0rKFzOZXbK8OmG4yMz967dQfNEM9Tqb2kq2uhDt6qntPeeZRMslvFTz_QLKOLyFSNUE2xkHlYLQnVIjK_Y9XN3J4DZXCxwxOd34COQ5WZsQvuxu3u1ZXZ-n1CxOZA2UKReJDjgArx48RTkxKtkdRpr71DKUZRoWNpT0HiexVj4XMt0RP3Z_qgAAAAILZDl_AQ").strip()
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1003984468691")) # আপনার অরিজিনাল চ্যানেল আইডি দিন
 
 # Pyrogram Client Setup
 bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, session_string=SESSION_STRING)
