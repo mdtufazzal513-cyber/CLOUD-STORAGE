@@ -7,21 +7,19 @@ import traceback
 
 app = FastAPI()
 
-# Render-এর Environment Variable
+# Render-এর Environment Variable (Bot Token আর লাগছে না)
 API_ID = int(os.getenv("API_ID", "33445387"))
 API_HASH = os.getenv("API_HASH", "5b1badf6d0f44c940a2263cef28d6689").strip()
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8781052287:AAEYTaE5Cj1sR4dokfsdhlTKXg1t5Kgejd0").strip()
-SESSION_STRING = os.getenv("SESSION_STRING", "BQH-VgsAZC_puXAZ6e5eDzWyH0COcjwPDqkkQ77m-U3KiD5FbuYXhVfXOa7LUS-dG29vF_QmY6RIzvNyquYX0R225jb5KvUlPH37XyXZwFbzykZFwvlsW8vfBWe3lnRe1Y-CzpSdC1oHxMNfAQmDIXhizTGqyI79RTOlOnnvD0rKFzOZXbK8OmG4yMz967dQfNEM9Tqb2kq2uhDt6qntPeeZRMslvFTz_QLKOLyFSNUE2xkHlYLQnVIjK_Y9XN3J4DZXCxwxOd34COQ5WZsQvuxu3u1ZXZ-n1CxOZA2UKReJDjgArx48RTkxKtkdRpr71DKUZRoWNpT0HiexVj4XMt0RP3Z_qgAAAAILZDl_AQ").strip()
+SESSION_STRING = os.getenv("SESSION_STRING", "BQH-VgsAjXAtpA7_8WzYjaImZMmoFJUd6RFEut4X32b15iWR-62IjLNTLZQt1xYigp13Sm6rcUVvXEuUdpoJDhwkaSTOCcT2CWGtRPslhvdY7JueDWhne_rJtCSqoV0AcADg21xCGuDNjLl4LaIry4VQerxgYEOmD93djo0MPUZRxoHuEAcNxTrCxr_IqC6fzEsMxB5Mqk1nnNM_-ZBsNKSzfvCiCljgVktNXXilhmchvLTFXs2EvYSHewxyJRuTK-NAVupaUKywQE1hVNWKMmJNKdIbXdPzGFbITV4wdY54ezBTsd1pP-NfLGb_VJYUkaQmeEy5EP49-Ak8gSkZL4AbrMqFKAAAAAIE58I1AA").strip()
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1003984468691")) # আপনার অরিজিনাল চ্যানেল আইডি দিন
 
-# Pyrogram Client Setup (in_memory=True যোগ করা হয়েছে এরর এড়াতে)
-bot = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, session_string=SESSION_STRING, in_memory=True)
+# Pyrogram Client Setup (ইউজার একাউন্ট মোড)
+bot = Client("my_user", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING, in_memory=True)
 
 # Upload Folder Setup
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Database Setup
 def init_db():
     conn = sqlite3.connect('cloud.db')
     c = conn.cursor()
@@ -34,9 +32,16 @@ init_db()
 
 @app.on_event("startup")
 async def startup():
-    print("--- Starting Telegram Bot... ---")
+    print("--- Starting Telegram Session... ---")
     await bot.start()
-    print("--- Telegram Bot Started Successfully! ---")
+    print("--- Loading Dialogs to fix Peer ID Invalid... ---")
+    try:
+        # এই কোডটি আপনার সব চ্যাটের লিস্ট থেকে প্রাইভেট চ্যানেলটিকে চিনে নেবে
+        async for dialog in bot.get_dialogs(limit=100):
+            pass
+        print("--- Dialogs Loaded Successfully! Peer ID issue fixed! ---")
+    except Exception as e:
+        print("Error loading dialogs:", e)
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -72,7 +77,7 @@ HTML_PAGE = """
             <h2 class="text-3xl font-semibold mb-6">Upload Files to Cloud</h2>
             <div class="border-2 border-dashed border-gray-500 p-12 rounded-xl mb-6 hover:border-blue-400 transition cursor-pointer" onclick="document.getElementById('fileInput').click()">
                 <i class="fa-solid fa-file-arrow-up text-6xl text-gray-400 mb-4"></i>
-                <p class="text-gray-300 mb-4">Click here to browse and select file</p>
+                <p class="text-gray-300 mb-4">Click here to browse and select file (Up to 2GB)</p>
                 <input type="file" id="fileInput" class="hidden">
                 <button class="px-6 py-3 bg-blue-600 rounded-lg font-semibold hover:bg-blue-500 transition">Browse File</button>
             </div>
@@ -178,9 +183,6 @@ async def serve_ui():
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...)):
     try:
-        print(f"--- Received Request to upload: {file.filename} ---")
-        
-        # স্পেস বা স্পেশাল ক্যারেক্টার রিমুভ করা
         safe_filename = file.filename.replace(" ", "_")
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
         
@@ -188,12 +190,9 @@ async def upload_file(file: UploadFile = File(...)):
             content = await file.read()
             buffer.write(content)
             file_size = len(content)
-            
-        print(f"--- Saved locally. Size: {file_size / (1024*1024):.2f} MB ---")
 
-        print("--- Sending to Telegram... ---")
+        # ইউজার একাউন্ট দিয়ে টেলিগ্রামে পাঠানো (2GB পর্যন্ত সাপোর্ট করবে)
         sent_message = await bot.send_document(chat_id=CHANNEL_ID, document=file_path)
-        print(f"--- Uploaded to Telegram successfully! Message ID: {sent_message.id} ---")
         
         conn = sqlite3.connect('cloud.db')
         c = conn.cursor()
