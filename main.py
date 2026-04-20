@@ -33,7 +33,6 @@ async def startup():
 async def shutdown():
     await bot.stop()
 
-
 # --- ওয়েবসাইট ডিজাইন ও ফায়ারবেস ইন্টিগ্রেশন (HTML/JS) ---
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -280,7 +279,7 @@ HTML_PAGE = """
 </body>
 </html>
 """
-====
+
 # --- ওয়েবসাইট ডিজাইন ও ফায়ারবেস ইন্টিগ্রেশন (HTML/JS) ---
 HTML_PAGE = """
 <!DOCTYPE html>
