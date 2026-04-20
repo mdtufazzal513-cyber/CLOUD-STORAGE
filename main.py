@@ -33,6 +33,7 @@ async def startup():
 async def shutdown():
     await bot.stop()
 
+<<<<
 # --- ওয়েবসাইট ডিজাইন ও ফায়ারবেস ইন্টিগ্রেশন (HTML/JS) ---
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -279,6 +280,431 @@ HTML_PAGE = """
 </body>
 </html>
 """
+====
+# --- ওয়েবসাইট ডিজাইন ও ফায়ারবেস ইন্টিগ্রেশন (HTML/JS) ---
+HTML_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0f172a">
+    <title>MyCloud</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
+
+    <style>
+        /* Native App Feel Utilities */
+        body { 
+            background-color: #0f172a; 
+            color: #f8fafc; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent; /* Removes web touch highlight */
+            user-select: none; /* Prevents text selection like an app */
+        }
+        /* Allow text selection only inside inputs and specific texts */
+        input, .selectable { user-select: text; }
+        
+        /* App Layout setup */
+        .app-container {
+            max-width: 500px; /* Mobile width constraint for web viewing */
+            margin: 0 auto;
+            min-height: 100vh;
+            background-color: #1e293b;
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .glass-header { 
+            background: rgba(30, 41, 59, 0.85); 
+            backdrop-filter: blur(12px); 
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .glass-bottom-nav {
+            background: rgba(30, 41, 59, 0.95); 
+            backdrop-filter: blur(12px); 
+            -webkit-backdrop-filter: blur(12px);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: env(safe-area-inset-bottom); /* iPhone X+ notch support */
+        }
+
+        .hidden { display: none !important; }
+        
+        /* Smooth Fade In */
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* Custom Scrollbar for file list */
+        .scrollable-content::-webkit-scrollbar { width: 0px; background: transparent; }
+    </style>
+</head>
+<body class="bg-slate-900">
+
+    <div class="app-container">
+
+        <!-- ================= AUTH SECTION ================= -->
+        <div id="authSection" class="flex-1 flex flex-col justify-center items-center p-6 fade-in">
+            <div class="w-16 h-16 bg-blue-500 rounded-2xl flex items-center justify-center mb-6 shadow-lg shadow-blue-500/30">
+                <i class="fa-solid fa-cloud text-3xl text-white"></i>
+            </div>
+            <h1 class="text-3xl font-bold mb-2">MyCloud</h1>
+            <p class="text-slate-400 mb-8 text-sm">Your secure unlimited storage</p>
+            
+            <div class="w-full space-y-4">
+                <div class="relative">
+                    <i class="fa-solid fa-envelope absolute left-4 top-4 text-slate-400"></i>
+                    <input type="email" id="email" placeholder="Email Address" class="w-full pl-12 pr-4 py-3 rounded-xl bg-slate-800 border border-slate-700 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition text-white">
+                </div>
+                <div class="relative">
+                    <i class="fa-solid fa-lock absolute left-4 top-4 text-slate-400"></i>
+                    <input type="password" id="password" placeholder="Password" class="w-full pl-12 pr-4 py-3 rounded-xl bg-slate-800 border border-slate-700 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition text-white">
+                </div>
+                
+                <div class="pt-2 flex flex-col gap-3">
+                    <button onclick="login()" class="w-full bg-blue-600 active:bg-blue-700 py-3.5 rounded-xl font-bold text-white shadow-lg shadow-blue-600/30 transition">Sign In</button>
+                    <button onclick="register()" class="w-full bg-slate-800 active:bg-slate-700 py-3.5 rounded-xl font-bold text-blue-400 border border-slate-700 transition">Create Account</button>
+                </div>
+                <p id="authError" class="text-red-400 text-center mt-2 text-sm font-medium"></p>
+            </div>
+        </div>
+
+
+        <!-- ================= MAIN APP SECTION ================= -->
+        <div id="appSection" class="hidden flex-1 flex flex-col h-screen max-h-screen">
+            
+            <!-- App Header -->
+            <header class="glass-header fixed top-0 w-full max-w-[500px] z-50 px-5 py-4 flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center shadow-md">
+                        <i class="fa-solid fa-cloud text-sm text-white"></i>
+                    </div>
+                    <h1 class="text-lg font-bold">MyCloud</h1>
+                </div>
+                <!-- Mini Profile Avatar -->
+                <div class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center border border-slate-600">
+                    <i class="fa-solid fa-user text-xs text-slate-300"></i>
+                </div>
+            </header>
+
+            <!-- Main Content Area (Scrollable) -->
+            <main class="flex-1 overflow-y-auto scrollable-content pt-20 pb-24 px-4">
+                
+                <!-- 1. FILES TAB (HOME) -->
+                <div id="filesTab" class="fade-in">
+                    <div class="flex justify-between items-end mb-4 px-1">
+                        <h2 class="text-xl font-bold text-white">Recent Files</h2>
+                        <span id="fileCountBadge" class="text-xs bg-slate-800 px-2 py-1 rounded-md text-slate-400">0 Items</span>
+                    </div>
+                    <div id="fileList" class="flex flex-col gap-3">
+                        <!-- JS Will Populate This with Native Style Cards -->
+                    </div>
+                </div>
+
+                <!-- 2. UPLOAD TAB -->
+                <div id="uploadTab" class="hidden fade-in flex flex-col items-center justify-center h-full pt-10">
+                    <h2 class="text-2xl font-bold mb-2">Upload File</h2>
+                    <p class="text-slate-400 text-sm mb-8 text-center px-4">Select any file from your device to upload securely to the cloud.</p>
+                    
+                    <!-- Native-like Upload Button Area -->
+                    <div class="w-full max-w-xs relative group cursor-pointer" onclick="document.getElementById('fileInput').click()">
+                        <div class="absolute inset-0 bg-blue-500 rounded-3xl blur opacity-20"></div>
+                        <div class="relative bg-slate-800 border-2 border-dashed border-slate-600 rounded-3xl p-10 flex flex-col items-center text-center transition active:bg-slate-700">
+                            <div class="w-16 h-16 bg-slate-700 rounded-full flex items-center justify-center mb-4 text-blue-400">
+                                <i class="fa-solid fa-arrow-up-from-bracket text-2xl"></i>
+                            </div>
+                            <span class="font-semibold text-blue-400">Tap to Browse</span>
+                            <span class="text-xs text-slate-500 mt-1">Files, Photos, Videos</span>
+                        </div>
+                        <input type="file" id="fileInput" class="hidden">
+                    </div>
+
+                    <!-- Upload Progress UI -->
+                    <div id="statusArea" class="hidden w-full max-w-xs mt-8 bg-slate-800 p-5 rounded-2xl border border-slate-700">
+                        <div class="flex justify-between items-center mb-2">
+                            <p id="statusText" class="text-sm font-semibold text-blue-400 truncate pr-2">Preparing...</p>
+                            <span id="percentText" class="text-xs font-bold text-slate-300">0%</span>
+                        </div>
+                        <div class="w-full bg-slate-900 rounded-full h-2 mb-2 overflow-hidden">
+                            <div id="progressBar" class="bg-blue-500 h-full rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <p id="sizeText" class="text-xs text-slate-500 text-right">0 MB / 0 MB</p>
+                    </div>
+                </div>
+
+                <!-- 3. PROFILE TAB -->
+                <div id="profileTab" class="hidden fade-in">
+                    <h2 class="text-xl font-bold text-white mb-6 px-1">Account</h2>
+                    
+                    <div class="bg-slate-800 rounded-2xl p-5 border border-slate-700 mb-6 flex items-center gap-4">
+                        <div class="w-14 h-14 rounded-full bg-blue-500/20 text-blue-500 flex items-center justify-center text-2xl">
+                            <i class="fa-solid fa-user"></i>
+                        </div>
+                        <div class="overflow-hidden">
+                            <p class="text-slate-400 text-xs uppercase font-bold tracking-wider mb-1">Logged in as</p>
+                            <p id="userEmailDisplay" class="font-semibold text-white truncate text-sm selectable">user@email.com</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
+                        <button onclick="logout()" class="w-full p-4 flex items-center text-red-400 active:bg-slate-700 transition text-left">
+                            <div class="w-8 h-8 rounded-full bg-red-500/10 flex items-center justify-center mr-3">
+                                <i class="fa-solid fa-right-from-bracket"></i>
+                            </div>
+                            <span class="font-semibold text-sm">Log Out</span>
+                        </button>
+                    </div>
+                </div>
+
+            </main>
+
+            <!-- Bottom Navigation Bar (Native App Style) -->
+            <nav class="glass-bottom-nav fixed bottom-0 w-full max-w-[500px] z-50 px-6 py-3 flex justify-between items-center rounded-t-3xl shadow-[0_-10px_30px_rgba(0,0,0,0.3)]">
+                <button onclick="showTab('files')" id="nav-files" class="nav-item flex flex-col items-center gap-1 p-2 text-blue-500 w-16 transition-colors duration-200">
+                    <i class="fa-solid fa-folder-open text-xl mb-0.5"></i>
+                    <span class="text-[10px] font-semibold">Files</span>
+                </button>
+                
+                <!-- Floating Action Button Style for Upload -->
+                <button onclick="showTab('upload')" id="nav-upload" class="nav-item relative -top-5 w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-lg shadow-blue-500/40 active:scale-95 transition-transform border-4 border-slate-900">
+                    <i class="fa-solid fa-plus text-2xl"></i>
+                </button>
+
+                <button onclick="showTab('profile')" id="nav-profile" class="nav-item flex flex-col items-center gap-1 p-2 text-slate-500 w-16 transition-colors duration-200">
+                    <i class="fa-solid fa-user text-xl mb-0.5"></i>
+                    <span class="text-[10px] font-semibold">Profile</span>
+                </button>
+            </nav>
+
+        </div>
+    </div>
+
+    <script>
+        // 1. Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyCjv-rmlT00GgTpA0UQ2NnXIyOjXn6ss_s",
+            authDomain: "file-to-stream.firebaseapp.com",
+            databaseURL: "https://file-to-stream-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "file-to-stream",
+            storageBucket: "file-to-stream.firebasestorage.app",
+            messagingSenderId: "529016978874",
+            appId: "1:529016978874:web:13ae6ef1cd9fa97d76f183",
+            measurementId: "G-LG4JV2K9JP"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.database();
+        let currentUser = null;
+
+        // 2. Auth State Listener
+        auth.onAuthStateChanged((user) => {
+            if (user) {
+                currentUser = user;
+                document.getElementById('authSection').classList.add('hidden');
+                document.getElementById('appSection').classList.remove('hidden');
+                document.getElementById('userEmailDisplay').innerText = user.email;
+                showTab('files'); // Default tab on login
+                loadFilesRealtime();
+            } else {
+                currentUser = null;
+                document.getElementById('authSection').classList.remove('hidden');
+                document.getElementById('appSection').classList.add('hidden');
+            }
+        });
+
+        // 3. Auth Functions
+        function register() {
+            let email = document.getElementById('email').value;
+            let pass = document.getElementById('password').value;
+            if(!email || !pass) { document.getElementById('authError').innerText = "Enter email and password"; return; }
+            auth.createUserWithEmailAndPassword(email, pass).catch(err => {
+                document.getElementById('authError').innerText = err.message;
+            });
+        }
+        function login() {
+            let email = document.getElementById('email').value;
+            let pass = document.getElementById('password').value;
+            if(!email || !pass) { document.getElementById('authError').innerText = "Enter email and password"; return; }
+            auth.signInWithEmailAndPassword(email, pass).catch(err => {
+                document.getElementById('authError').innerText = err.message;
+            });
+        }
+        function logout() { auth.signOut(); }
+
+        // 4. UI Navigation (Bottom Nav Logic)
+        function showTab(tab) {
+            // Hide all tabs
+            ['files', 'upload', 'profile'].forEach(id => {
+                document.getElementById(id + 'Tab').classList.add('hidden');
+            });
+            
+            // Show selected tab
+            document.getElementById(tab + 'Tab').classList.remove('hidden');
+
+            // Reset Bottom Nav Colors
+            document.getElementById('nav-files').className = "nav-item flex flex-col items-center gap-1 p-2 text-slate-500 w-16 transition-colors duration-200";
+            document.getElementById('nav-profile').className = "nav-item flex flex-col items-center gap-1 p-2 text-slate-500 w-16 transition-colors duration-200";
+            document.getElementById('nav-upload').classList.remove('bg-blue-800'); // Reset FAB active state
+
+            // Set Active Color
+            if(tab === 'files') {
+                document.getElementById('nav-files').classList.replace('text-slate-500', 'text-blue-500');
+            } else if(tab === 'profile') {
+                document.getElementById('nav-profile').classList.replace('text-slate-500', 'text-blue-500');
+            } else if(tab === 'upload') {
+                // FAB specific styling if needed
+                document.getElementById('nav-upload').classList.add('bg-blue-800');
+            }
+            
+            // Scroll to top
+            document.querySelector('main').scrollTo(0,0);
+        }
+
+        // 5. Upload with REAL Progress (XHR)
+        document.getElementById('fileInput').addEventListener('change', function() {
+            let file = this.files[0];
+            if (!file) return;
+
+            document.getElementById('statusArea').classList.remove('hidden');
+            document.getElementById('statusText').innerText = file.name;
+            document.getElementById('statusText').className = "text-sm font-semibold text-blue-400 truncate pr-2";
+            
+            let formData = new FormData();
+            formData.append("file", file);
+
+            let xhr = new XMLHttpRequest();
+            xhr.open("POST", "/upload/", true);
+
+            // Upload Progress Event
+            xhr.upload.onprogress = function(event) {
+                if (event.lengthComputable) {
+                    let percentComplete = Math.round((event.loaded / event.total) * 100);
+                    let loadedMB = (event.loaded / (1024 * 1024)).toFixed(2);
+                    let totalMB = (event.total / (1024 * 1024)).toFixed(2);
+                    
+                    document.getElementById('progressBar').style.width = percentComplete + '%';
+                    document.getElementById('percentText').innerText = percentComplete + '%';
+                    document.getElementById('sizeText').innerText = `${loadedMB} MB / ${totalMB} MB`;
+                    
+                    if (percentComplete === 100) {
+                        document.getElementById('statusText').innerText = "Processing in Telegram...";
+                        document.getElementById('statusText').className = "text-sm font-semibold text-yellow-400 truncate pr-2";
+                    }
+                }
+            };
+
+            // Request Finished Event
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    let result = JSON.parse(xhr.responseText);
+                    if (result.status === "success") {
+                        document.getElementById('statusText').innerText = "Upload Complete!";
+                        document.getElementById('statusText').className = "text-sm font-semibold text-green-400 truncate pr-2";
+                        
+                        // Save to Firebase Database under this User's UID
+                        db.ref('users/' + currentUser.uid + '/files').push({
+                            file_name: result.file_name,
+                            file_size: result.file_size,
+                            message_id: result.message_id,
+                            timestamp: firebase.database.ServerValue.TIMESTAMP
+                        });
+
+                        setTimeout(() => { 
+                            document.getElementById('statusArea').classList.add('hidden'); 
+                            document.getElementById('fileInput').value = "";
+                            document.getElementById('progressBar').style.width = '0%';
+                            document.getElementById('percentText').innerText = '0%';
+                            showTab('files');
+                        }, 1500);
+                    }
+                } else {
+                    document.getElementById('statusText').innerText = "Upload Failed!";
+                    document.getElementById('statusText').className = "text-sm font-semibold text-red-400 truncate pr-2";
+                }
+            };
+
+            xhr.send(formData);
+        });
+
+        // 6. Realtime Database Fetch & Render (Native Card UI)
+        function loadFilesRealtime() {
+            let fileList = document.getElementById('fileList');
+            let countBadge = document.getElementById('fileCountBadge');
+
+            db.ref('users/' + currentUser.uid + '/files').on('value', (snapshot) => {
+                fileList.innerHTML = '';
+                
+                if (!snapshot.exists()) {
+                    countBadge.innerText = "0 Items";
+                    fileList.innerHTML = `
+                        <div class="flex flex-col items-center justify-center py-10 opacity-50">
+                            <i class="fa-solid fa-folder-open text-5xl text-slate-500 mb-4"></i>
+                            <p class="text-slate-400 text-sm">No files uploaded yet.</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                let data = [];
+                snapshot.forEach(child => { data.push({key: child.key, ...child.val()}); });
+                data.sort((a, b) => b.timestamp - a.timestamp);
+                
+                countBadge.innerText = `${data.length} Items`;
+
+                data.forEach(f => {
+                    let sizeMB = (f.file_size / (1024 * 1024)).toFixed(2);
+                    
+                    // Native App Card Style
+                    fileList.innerHTML += `
+                        <div class="bg-slate-800 p-3 rounded-2xl border border-slate-700 flex justify-between items-center shadow-sm">
+                            <div class="flex items-center overflow-hidden flex-1 mr-3">
+                                <div class="w-12 h-12 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500 mr-3 flex-shrink-0">
+                                    <i class="fa-solid fa-file text-xl"></i>
+                                </div>
+                                <div class="overflow-hidden">
+                                    <p class="font-semibold text-white text-sm truncate w-full selectable" title="${f.file_name}">${f.file_name}</p>
+                                    <p class="text-xs text-slate-400 mt-0.5">${sizeMB} MB</p>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-center gap-1 flex-shrink-0">
+                                <a href="/download/${f.message_id}" target="_blank" class="w-10 h-10 rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 active:bg-slate-600 transition" title="Download">
+                                    <i class="fa-solid fa-arrow-down"></i>
+                                </a>
+                                <button onclick="deleteFile('${f.key}', ${f.message_id})" class="w-10 h-10 rounded-full flex items-center justify-center text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 active:bg-red-500/30 transition" title="Delete">
+                                    <i class="fa-solid fa-trash-can text-sm"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                });
+            });
+        }
+
+        // 7. Delete Logic
+        async function deleteFile(dbKey, messageId) {
+            // Using a simple confirm, but you could implement a nice custom modal later for real app feel
+            if(!confirm("Delete this file permanently?")) return;
+            try {
+                await fetch(`/delete/${messageId}`, { method: 'DELETE' });
+                db.ref(`users/${currentUser.uid}/files/${dbKey}`).remove();
+            } catch(e) {
+                alert("Error deleting file.");
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+>>>>
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
