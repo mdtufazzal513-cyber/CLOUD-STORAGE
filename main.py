@@ -1,6 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 from pyrogram import Client
 import os
 import traceback
@@ -8,24 +7,11 @@ import re
 
 app = FastAPI()
 
-# অফলাইন WebApp বা অন্য যেকোনো জায়গা থেকে রিকোয়েস্ট অ্যাক্সেপ্ট করার পারমিশন (CORS)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # সব জায়গা থেকে অ্যালাউ করবে
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Render-এর Environment Variable
 API_ID = int(os.getenv("API_ID", "33445387"))
 API_HASH = os.getenv("API_HASH", "5b1badf6d0f44c940a2263cef28d6689").strip()
 SESSION_STRING = os.getenv("SESSION_STRING", "BQH-VgsAjXAtpA7_8WzYjaImZMmoFJUd6RFEut4X32b15iWR-62IjLNTLZQt1xYigp13Sm6rcUVvXEuUdpoJDhwkaSTOCcT2CWGtRPslhvdY7JueDWhne_rJtCSqoV0AcADg21xCGuDNjLl4LaIry4VQerxgYEOmD93djo0MPUZRxoHuEAcNxTrCxr_IqC6fzEsMxB5Mqk1nnNM_-ZBsNKSzfvCiCljgVktNXXilhmchvLTFXs2EvYSHewxyJRuTK-NAVupaUKywQE1hVNWKMmJNKdIbXdPzGFbITV4wdY54ezBTsd1pP-NfLGb_VJYUkaQmeEy5EP49-Ak8gSkZL4AbrMqFKAAAAAIE58I1AA").strip()
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1003984468691"))
-
-# কমা (,) দিয়ে একাধিক Admin UID দেওয়া যাবে।
-# উদাহরণ: "UID1,UID2,UID3"
-ADMIN_UIDS_ENV = os.getenv("ADMIN_UIDS", "oAK6oVAdUBetVRBKkbwnUKsHr8A2
 
 # Pyrogram Client Setup
 bot = Client("my_user", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING, in_memory=True)
@@ -375,13 +361,3 @@ async def delete_file(message_id: int):
         return {"status": "success"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-       # --- নতুন: Admin Panel Route ---
-@app.get("/admin", response_class=HTMLResponse)
-async def serve_admin_ui():
-    # Admin Panel HTML file load
-    with open("admin.html", "r", encoding="utf-8") as f:
-        html_content = f.read()
-    
-    # Python থেকে Admin UID গুলো JS এ পাঠানো হচ্ছে
-    html_content = html_content.replace("{{ADMIN_UIDS_INJECT}}", ADMIN_UIDS_ENV)
-    return HTML_content
