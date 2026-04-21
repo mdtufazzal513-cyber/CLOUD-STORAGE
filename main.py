@@ -195,8 +195,9 @@ HTML_PAGE = """
             // Request Finished Event
             xhr.onload = function() {
                 if (xhr.status === 200) {
-                    let result = JSON.parse(xhr.responseText);
-                    if (result.status === "success") {
+                    try {
+                        let result = JSON.parse(xhr.responseText);
+                        if (result.status === "success") {
                         document.getElementById('statusText').innerText = "Upload Complete!";
                         document.getElementById('statusText').className = "text-green-400 font-semibold mb-2";
                         
@@ -349,6 +350,16 @@ HTML_PAGE = """
 <body class="bg-slate-900">
 
     <div class="app-container">
+
+        <!-- ================= WAKE UP OVERLAY ================= -->
+        <div id="wakeupOverlay" class="hidden fixed inset-0 bg-slate-900/95 z-[100] backdrop-blur-md flex flex-col items-center justify-center text-center px-6 transition-opacity duration-300">
+            <i class="fa-solid fa-cloud-arrow-up fa-bounce text-6xl text-blue-500 mb-6"></i>
+            <h2 class="text-2xl font-bold text-white mb-2">Waking up Server...</h2>
+            <p class="text-slate-400 text-sm mb-6">Please wait while our cloud connects. This usually takes 15-30 seconds.</p>
+            <div class="w-48 bg-slate-800 rounded-full h-2 overflow-hidden">
+                <div class="bg-blue-500 h-full rounded-full animate-pulse" style="width: 100%"></div>
+            </div>
+        </div>
 
         <!-- ================= AUTH SECTION ================= -->
         <div id="authSection" class="flex-1 flex flex-col justify-center items-center p-6 fade-in">
@@ -603,8 +614,9 @@ HTML_PAGE = """
             // Request Finished Event
             xhr.onload = function() {
                 if (xhr.status === 200) {
-                    let result = JSON.parse(xhr.responseText);
-                    if (result.status === "success") {
+                    try {
+                        let result = JSON.parse(xhr.responseText);
+                        if (result.status === "success") {
                         document.getElementById('statusText').innerText = "Upload Complete!";
                         document.getElementById('statusText').className = "text-sm font-semibold text-green-400 truncate pr-2";
                         
@@ -623,6 +635,13 @@ HTML_PAGE = """
                             document.getElementById('percentText').innerText = '0%';
                             showTab('files');
                         }, 1500);
+                    }
+                    } catch(e) {
+                        // Render returned its spinning up HTML instead of JSON
+                        document.getElementById('statusText').innerText = "Server waking up. Please re-upload!";
+                        document.getElementById('statusText').className = "text-sm font-semibold text-yellow-400 truncate pr-2";
+                        document.getElementById('progressBar').style.width = '0%';
+                        document.getElementById('percentText').innerText = 'Wait & Try';
                     }
                 } else {
                     document.getElementById('statusText').innerText = "Upload Failed!";
@@ -675,9 +694,9 @@ HTML_PAGE = """
                             </div>
                             
                             <div class="flex items-center gap-1 flex-shrink-0">
-                                <a href="/download/${f.message_id}" target="_blank" class="w-10 h-10 rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 active:bg-slate-600 transition" title="Download">
+                                <button onclick="safeDownload('${f.message_id}')" class="w-10 h-10 rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 active:bg-slate-600 transition" title="Download">
                                     <i class="fa-solid fa-arrow-down"></i>
-                                </a>
+                                </button>
                                 <button onclick="deleteFile('${f.key}', ${f.message_id})" class="w-10 h-10 rounded-full flex items-center justify-center text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 active:bg-red-500/30 transition" title="Delete">
                                     <i class="fa-solid fa-trash-can text-sm"></i>
                                 </button>
@@ -688,7 +707,37 @@ HTML_PAGE = """
             });
         }
 
-        // 7. Delete Logic
+        // 7. Safe Download Logic (Checks if server is awake)
+        function safeDownload(messageId) {
+            let overlay = document.getElementById('wakeupOverlay');
+            overlay.classList.remove('hidden');
+
+            // Check every 3 seconds if Render is awake
+            let checkInterval = setInterval(async () => {
+                try {
+                    let res = await fetch('/ping');
+                    // Ensure we get JSON from FastAPI, not Render's HTML page
+                    if (res.ok && res.headers.get("content-type").includes("application/json")) {
+                        clearInterval(checkInterval);
+                        overlay.classList.add('hidden');
+                        window.open(`/download/${messageId}`, '_blank');
+                    }
+                } catch(e) {
+                    console.log("Waiting for server to wake up...");
+                }
+            }, 3000); 
+
+            // Auto cancel after 60 seconds if it fails to wake up
+            setTimeout(() => {
+                clearInterval(checkInterval);
+                if(!overlay.classList.contains('hidden')){
+                    overlay.classList.add('hidden');
+                    alert("Server is taking too long to wake up. Please try again.");
+                }
+            }, 60000);
+        }
+
+        // 8. Delete Logic
         async function deleteFile(dbKey, messageId) {
             // Using a simple confirm, but you could implement a nice custom modal later for real app feel
             if(!confirm("Delete this file permanently?")) return;
@@ -703,6 +752,10 @@ HTML_PAGE = """
 </body>
 </html>
 """
+
+@app.get("/ping")
+async def ping_server():
+    return {"status": "awake"}
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
