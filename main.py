@@ -8,8 +8,8 @@ import re
 import asyncio
 import urllib.parse
 
-# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Max 1 concurrent download to prevent crashes)
-MAX_CONCURRENT_DOWNLOADS = 1
+# সার্ভারের স্পিড বুস্ট করার জন্য ট্রাফিক কন্ট্রোলার (Max 5 concurrent downloads)
+MAX_CONCURRENT_DOWNLOADS = 5
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
@@ -21,7 +21,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],  # GET, POST, DELETE সব এলাউ করবে
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "Content-Length", "Content-Range", "Accept-Ranges"] # ফাইল ডাউনলোডের জন্য এটি অত্যন্ত জরুরি
+    expose_headers=["Content-Disposition", "Content-Length", "Content-Range", "Accept-Ranges"], # ফাইল ডাউনলোডের জন্য এটি অত্যন্ত জরুরি
+    max_age=3600 # ব্রাউজার ১ ঘণ্টার জন্য সিকিউরিটি চেক ক্যাশ করে রাখবে (স্পিড বুস্ট)
 )
 
 # Render-এর Environment Variable
