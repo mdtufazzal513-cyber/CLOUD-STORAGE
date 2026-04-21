@@ -435,19 +435,13 @@ HTML_PAGE = """
                             <span class="font-semibold text-blue-400">Tap to Browse</span>
                             <span class="text-xs text-slate-500 mt-1">Files, Photos, Videos</span>
                         </div>
-                        <input type="file" id="fileInput" class="hidden">
+                        <!-- multiple অ্যাট্রিবিউট যুক্ত করা হয়েছে -->
+                        <input type="file" id="fileInput" class="hidden" multiple>
                     </div>
 
-                    <!-- Upload Progress UI -->
-                    <div id="statusArea" class="hidden w-full max-w-xs mt-8 bg-slate-800 p-5 rounded-2xl border border-slate-700">
-                        <div class="flex justify-between items-center mb-2">
-                            <p id="statusText" class="text-sm font-semibold text-blue-400 truncate pr-2">Preparing...</p>
-                            <span id="percentText" class="text-xs font-bold text-slate-300">0%</span>
-                        </div>
-                        <div class="w-full bg-slate-900 rounded-full h-2 mb-2 overflow-hidden">
-                            <div id="progressBar" class="bg-blue-500 h-full rounded-full transition-all duration-300" style="width: 0%"></div>
-                        </div>
-                        <p id="sizeText" class="text-xs text-slate-500 text-right">0 MB / 0 MB</p>
+                    <!-- Dynamic Multiple Upload Progress UI Container -->
+                    <div id="uploadListContainer" class="w-full max-w-md mt-6 flex flex-col gap-3 px-2 pb-10">
+                        <!-- জাভাস্ক্রিপ্ট এখানে কার্ডগুলো তৈরি করবে -->
                     </div>
                 </div>
 
@@ -579,79 +573,134 @@ HTML_PAGE = """
             document.querySelector('main').scrollTo(0,0);
         }
 
-        // 5. Upload with REAL Progress (XHR)
+        // 5. Multi-Upload System with Progress & Cancel Support
         document.getElementById('fileInput').addEventListener('change', function() {
-            let file = this.files[0];
-            if (!file) return;
+            let files = this.files;
+            if (files.length === 0) return;
 
-            document.getElementById('statusArea').classList.remove('hidden');
-            document.getElementById('statusText').innerText = file.name;
-            document.getElementById('statusText').className = "text-sm font-semibold text-blue-400 truncate pr-2";
+            let uploadListContainer = document.getElementById('uploadListContainer');
+
+            // প্রতিটি ফাইলের জন্য আলাদা লুপ
+            Array.from(files).forEach((file, index) => {
+                let fileId = 'upload_' + Date.now() + '_' + index;
+                
+                // ডাইনামিক আপলোড কার্ড তৈরি করা
+                let uploadCard = document.createElement('div');
+                uploadCard.className = "bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-md fade-in relative";
+                uploadCard.id = fileId;
+                
+                uploadCard.innerHTML = `
+                    <div class="flex justify-between items-center mb-2">
+                        <div class="overflow-hidden pr-2 flex-1">
+                            <p class="text-sm font-semibold text-blue-400 truncate">${file.name}</p>
+                            <p class="text-xs text-slate-400 size-text mt-0.5">0 MB / ${(file.size / (1024*1024)).toFixed(2)} MB</p>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs font-bold text-slate-300 percent-text w-8 text-right">0%</span>
+                            <!-- Cancel Button -->
+                            <button class="w-8 h-8 rounded-full bg-slate-700 text-red-400 hover:bg-red-500 hover:text-white flex items-center justify-center transition cancel-btn" title="Cancel Upload">
+                                <i class="fa-solid fa-xmark"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="w-full bg-slate-900 rounded-full h-2 mb-2 overflow-hidden border border-slate-700">
+                        <div class="bg-blue-500 h-full rounded-full transition-all duration-300 progress-bar" style="width: 0%"></div>
+                    </div>
+                    <p class="text-[11px] font-semibold text-slate-400 status-text tracking-wide">Preparing...</p>
+                `;
+                
+                uploadListContainer.appendChild(uploadCard);
+                startSingleUpload(file, uploadCard);
+            });
             
+            this.value = ""; // পরেরবার যেন একই ফাইল সিলেক্ট করা যায়
+        });
+
+        function startSingleUpload(file, card) {
+            let progressBar = card.querySelector('.progress-bar');
+            let percentText = card.querySelector('.percent-text');
+            let sizeText = card.querySelector('.size-text');
+            let statusText = card.querySelector('.status-text');
+            let cancelBtn = card.querySelector('.cancel-btn');
+
             let formData = new FormData();
             formData.append("file", file);
 
             let xhr = new XMLHttpRequest();
             xhr.open("POST", "/upload/", true);
 
-            // Upload Progress Event
+            // ক্যানসেল বাটন লজিক
+            cancelBtn.onclick = () => {
+                xhr.abort(); // রিকোয়েস্ট ক্যানসেল করা
+                statusText.innerText = "Upload Cancelled";
+                statusText.className = "text-[11px] font-semibold text-red-400 status-text tracking-wide";
+                progressBar.classList.replace('bg-blue-500', 'bg-red-500');
+                cancelBtn.classList.add('hidden');
+                setTimeout(() => { card.style.display = 'none'; }, 2000); // ২ সেকেন্ড পর কার্ড গায়েব
+            };
+
+            // আপলোড প্রোগ্রেস লজিক
             xhr.upload.onprogress = function(event) {
                 if (event.lengthComputable) {
                     let percentComplete = Math.round((event.loaded / event.total) * 100);
                     let loadedMB = (event.loaded / (1024 * 1024)).toFixed(2);
                     let totalMB = (event.total / (1024 * 1024)).toFixed(2);
                     
-                    document.getElementById('progressBar').style.width = percentComplete + '%';
-                    document.getElementById('percentText').innerText = percentComplete + '%';
-                    document.getElementById('sizeText').innerText = `${loadedMB} MB / ${totalMB} MB`;
+                    progressBar.style.width = percentComplete + '%';
+                    percentText.innerText = percentComplete + '%';
+                    sizeText.innerText = `${loadedMB} MB / ${totalMB} MB`;
+                    statusText.innerText = "Uploading to Server...";
+                    statusText.className = "text-[11px] font-semibold text-blue-400 status-text tracking-wide";
                     
                     if (percentComplete === 100) {
-                        document.getElementById('statusText').innerText = "Processing in Telegram...";
-                        document.getElementById('statusText').className = "text-sm font-semibold text-yellow-400 truncate pr-2";
+                        statusText.innerText = "Processing in cloud ☁️";
+                        statusText.className = "text-[11px] font-semibold text-yellow-400 status-text tracking-wide animate-pulse";
+                        cancelBtn.classList.add('hidden'); // ক্লাউডে প্রসেসিং শুরু হলে আর ক্যানসেল করা যাবে না
                     }
                 }
             };
 
-            // Request Finished Event
+            // আপলোড কমপ্লিট বা ফেইল লজিক
             xhr.onload = function() {
                 if (xhr.status === 200) {
                     try {
                         let result = JSON.parse(xhr.responseText);
                         if (result.status === "success") {
-                        document.getElementById('statusText').innerText = "Upload Complete!";
-                        document.getElementById('statusText').className = "text-sm font-semibold text-green-400 truncate pr-2";
-                        
-                        // Save to Firebase Database under this User's UID
-                        db.ref('users/' + currentUser.uid + '/files').push({
-                            file_name: result.file_name,
-                            file_size: result.file_size,
-                            message_id: result.message_id,
-                            timestamp: firebase.database.ServerValue.TIMESTAMP
-                        });
+                            statusText.innerText = "Saved Successfully!";
+                            statusText.className = "text-[11px] font-semibold text-green-400 status-text tracking-wide";
+                            progressBar.classList.replace('bg-blue-500', 'bg-green-500');
+                            
+                            // ফায়ারবেসে সেভ করা
+                            db.ref('users/' + currentUser.uid + '/files').push({
+                                file_name: result.file_name,
+                                file_size: result.file_size,
+                                message_id: result.message_id,
+                                timestamp: firebase.database.ServerValue.TIMESTAMP
+                            });
 
-                        setTimeout(() => { 
-                            document.getElementById('statusArea').classList.add('hidden'); 
-                            document.getElementById('fileInput').value = "";
-                            document.getElementById('progressBar').style.width = '0%';
-                            document.getElementById('percentText').innerText = '0%';
-                            showTab('files');
-                        }, 1500);
-                    }
+                            // সফল হলে ৩ সেকেন্ড পর কার্ড রিমুভ হয়ে যাবে
+                            setTimeout(() => { card.style.display = 'none'; }, 3000);
+                        }
                     } catch(e) {
-                        // Render returned its spinning up HTML instead of JSON
-                        document.getElementById('statusText').innerText = "Server waking up. Please re-upload!";
-                        document.getElementById('statusText').className = "text-sm font-semibold text-yellow-400 truncate pr-2";
-                        document.getElementById('progressBar').style.width = '0%';
-                        document.getElementById('percentText').innerText = 'Wait & Try';
+                        statusText.innerText = "Server waking up. Retry!";
+                        statusText.className = "text-[11px] font-semibold text-yellow-400 status-text tracking-wide";
+                        cancelBtn.classList.remove('hidden');
                     }
                 } else {
-                    document.getElementById('statusText').innerText = "Upload Failed!";
-                    document.getElementById('statusText').className = "text-sm font-semibold text-red-400 truncate pr-2";
+                    statusText.innerText = "Upload Failed!";
+                    statusText.className = "text-[11px] font-semibold text-red-400 status-text tracking-wide";
+                    progressBar.classList.replace('bg-blue-500', 'bg-red-500');
                 }
             };
 
+            xhr.onerror = function() {
+                statusText.innerText = "Network Error!";
+                statusText.className = "text-[11px] font-semibold text-red-400 status-text tracking-wide";
+                progressBar.classList.replace('bg-blue-500', 'bg-red-500');
+            };
+
             xhr.send(formData);
-        });
+        }
 
         // 6. Realtime Database Fetch & Render (Native Card UI)
         function loadFilesRealtime() {
