@@ -957,18 +957,26 @@ async def upload_file(file: UploadFile = File(...)):
         return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
 
+import urllib.parse # ফাইলের নামে ইমোজি বা বাংলা লেখা থাকলে সার্ভার যেন ক্র্যাশ না করে
+
 # --- নতুন: Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}")
 async def download_file(message_id: int, request: Request):
     try:
         message = await bot.get_messages(CHANNEL_ID, message_id)
-        if not message or not getattr(message, "document", None) and not getattr(message, "video", None) and not getattr(message, "photo", None):
-            return JSONResponse(status_code=404, content={"error": "File not found"})
+        
+        # মেসেজ ডিলিট হয়ে গেলে বা ফাইল না থাকলে
+        if not message or getattr(message, "empty", False) or (not getattr(message, "document", None) and not getattr(message, "video", None) and not getattr(message, "photo", None)):
+            return JSONResponse(status_code=404, content={"error": "File not found or deleted from Telegram"})
 
         media = message.document or message.video or message.photo
         file_name = getattr(media, "file_name", f"file_{message_id}")
         file_size = getattr(media, "file_size", 0)
         mime_type = getattr(media, "mime_type", "application/octet-stream")
+
+        # ফাইল জিরো বাইট হলে সার্ভার যেন ক্র্যাশ না করে
+        if file_size == 0:
+            return JSONResponse(status_code=400, content={"error": "File size is 0 bytes (corrupted upload)"})
 
         # Range Header লজিক (Pause/Resume এর জন্য)
         range_header = request.headers.get("Range")
@@ -982,28 +990,28 @@ async def download_file(message_id: int, request: Request):
                 start = int(range_match.group(1))
                 end_str = range_match.group(2)
                 end = int(end_str) if end_str else file_size - 1
-                status_code = 206 # 206 Partial Content (IDM বা ব্রাউজার বুঝবে যে ফাইল কাটা যায়)
+                status_code = 206 # Partial Content
+
+        # ফাইলের নামে স্পেস, ইমোজি বা বাংলা থাকলে সার্ভার ক্র্যাশ (500 Error) করে, তাই এটি এনকোড করা হলো
+        encoded_name = urllib.parse.quote(file_name)
 
         headers = {
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
-            "Content-Disposition": f'attachment; filename="{file_name}"'
+            "Content-Disposition": f"attachment; filename*=utf-8''{encoded_name}"
         }
 
         # Pyrogram থেকে নির্দিষ্ট বাইট (offset) থেকে স্ট্রিম করা
         async def ranged_file_streamer():
-            # স্লট ফাঁকা হওয়া মাত্রই অটোমেটিক ওয়েটিং থেকে পরের ফাইল এখানে ঢুকে যাবে
             async with download_semaphore: 
                 try:
                     async for chunk in bot.stream_media(message, offset=start, limit=(end - start + 1)):
-                        # ইউজার ব্রাউজার থেকে ডাউনলোড ক্যানসেল বা পজ করলে সাথে সাথে কানেকশন ব্রেক হবে
                         if await request.is_disconnected():
-                            print("User canceled the download. Releasing slot for the next waiting file...")
+                            print("User canceled the download. Releasing slot...")
                             break
                         yield chunk
                 except asyncio.CancelledError:
-                    # FastAPI ক্লায়েন্ট ডিসকানেক্ট হলে এই এরর দেয়, এটি ধরা মানে স্লট সাথে সাথে ফ্রি করে দেওয়া
                     print("Download task was canceled by browser. Slot freed.")
                 except Exception as e:
                     print(f"Stream interrupted: {e}")
@@ -1012,7 +1020,7 @@ async def download_file(message_id: int, request: Request):
 
     except Exception as e:
         print(f"Download Error: {e}")
-        return JSONResponse(status_code=500, content={"error": "Internal Server Error"})
+        return JSONResponse(status_code=500, content={"error": f"Internal Server Error: {str(e)}"})
 
 @app.delete("/delete/{message_id}")
 async def delete_file(message_id: int):
