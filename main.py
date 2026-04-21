@@ -409,7 +409,16 @@ HTML_PAGE = """
             <!-- Main Content Area (Scrollable) -->
             <main class="flex-1 overflow-y-auto scrollable-content pt-20 pb-24 px-4">
                 
-                <!-- 1. FILES TAB (HOME) -->
+                <!-- 0. HOME TAB (Placeholder) -->
+                <div id="homeTab" class="hidden fade-in flex flex-col items-center justify-center h-full pt-10">
+                    <div class="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mb-6 shadow-lg border border-slate-700">
+                        <i class="fa-solid fa-house text-4xl text-slate-500"></i>
+                    </div>
+                    <h2 class="text-2xl font-bold text-slate-300">Home Dashboard</h2>
+                    <p class="text-slate-500 text-sm mt-2 text-center px-6">Exciting new features are coming soon to this space!</p>
+                </div>
+
+                <!-- 1. FILES TAB -->
                 <div id="filesTab" class="fade-in">
                     <div class="flex justify-between items-end mb-4 px-1">
                         <h2 class="text-xl font-bold text-white">Recent Files</h2>
@@ -471,18 +480,27 @@ HTML_PAGE = """
 
             </main>
 
+            <!-- Floating Action Button (Upload) - Moved to bottom-right -->
+            <button onclick="showTab('upload')" id="nav-upload" class="fixed bottom-24 right-6 w-14 h-14 bg-blue-600 hover:bg-blue-500 rounded-full flex items-center justify-center text-white shadow-[0_10px_20px_rgba(37,99,235,0.4)] active:scale-90 transition-all duration-200 z-50 border border-blue-400">
+                <i class="fa-solid fa-plus text-2xl"></i>
+            </button>
+
             <!-- Bottom Navigation Bar (Native App Style) -->
-            <nav class="glass-bottom-nav fixed bottom-0 w-full max-w-[500px] z-50 px-6 py-3 flex justify-between items-center rounded-t-3xl shadow-[0_-10px_30px_rgba(0,0,0,0.3)]">
+            <nav class="glass-bottom-nav fixed bottom-0 w-full max-w-[500px] z-50 px-8 py-3 flex justify-between items-center rounded-t-3xl shadow-[0_-10px_30px_rgba(0,0,0,0.3)]">
+                
+                <!-- Home Button (Left) -->
+                <button onclick="showTab('home')" id="nav-home" class="nav-item flex flex-col items-center gap-1 p-2 text-slate-500 w-16 transition-colors duration-200">
+                    <i class="fa-solid fa-house text-xl mb-0.5"></i>
+                    <span class="text-[10px] font-semibold">Home</span>
+                </button>
+
+                <!-- Files Button (Center) -->
                 <button onclick="showTab('files')" id="nav-files" class="nav-item flex flex-col items-center gap-1 p-2 text-blue-500 w-16 transition-colors duration-200">
                     <i class="fa-solid fa-folder-open text-xl mb-0.5"></i>
                     <span class="text-[10px] font-semibold">Files</span>
                 </button>
                 
-                <!-- Floating Action Button Style for Upload -->
-                <button onclick="showTab('upload')" id="nav-upload" class="nav-item relative -top-5 w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-lg shadow-blue-500/40 active:scale-95 transition-transform border-4 border-slate-900">
-                    <i class="fa-solid fa-plus text-2xl"></i>
-                </button>
-
+                <!-- Profile Button (Right) -->
                 <button onclick="showTab('profile')" id="nav-profile" class="nav-item flex flex-col items-center gap-1 p-2 text-slate-500 w-16 transition-colors duration-200">
                     <i class="fa-solid fa-user text-xl mb-0.5"></i>
                     <span class="text-[10px] font-semibold">Profile</span>
@@ -546,27 +564,34 @@ HTML_PAGE = """
 
         // 4. UI Navigation (Bottom Nav Logic)
         function showTab(tab) {
-            // Hide all tabs
-            ['files', 'upload', 'profile'].forEach(id => {
+            // Hide all tabs (নতুন Home ট্যাব যুক্ত করা হয়েছে)
+            ['home', 'files', 'upload', 'profile'].forEach(id => {
                 document.getElementById(id + 'Tab').classList.add('hidden');
             });
             
             // Show selected tab
             document.getElementById(tab + 'Tab').classList.remove('hidden');
 
+            // স্মার্ট লজিক: যখন ইউজার Upload পেজে থাকবে, তখন ফ্লোটিং প্লাস (+) বাটনটি লুকিয়ে যাবে
+            let fab = document.getElementById('nav-upload');
+            if(tab === 'upload') {
+                fab.classList.add('scale-0', 'opacity-0', 'pointer-events-none');
+            } else {
+                fab.classList.remove('scale-0', 'opacity-0', 'pointer-events-none');
+            }
+
             // Reset Bottom Nav Colors
+            document.getElementById('nav-home').className = "nav-item flex flex-col items-center gap-1 p-2 text-slate-500 w-16 transition-colors duration-200";
             document.getElementById('nav-files').className = "nav-item flex flex-col items-center gap-1 p-2 text-slate-500 w-16 transition-colors duration-200";
             document.getElementById('nav-profile').className = "nav-item flex flex-col items-center gap-1 p-2 text-slate-500 w-16 transition-colors duration-200";
-            document.getElementById('nav-upload').classList.remove('bg-blue-800'); // Reset FAB active state
 
             // Set Active Color
-            if(tab === 'files') {
+            if(tab === 'home') {
+                document.getElementById('nav-home').classList.replace('text-slate-500', 'text-blue-500');
+            } else if(tab === 'files') {
                 document.getElementById('nav-files').classList.replace('text-slate-500', 'text-blue-500');
             } else if(tab === 'profile') {
                 document.getElementById('nav-profile').classList.replace('text-slate-500', 'text-blue-500');
-            } else if(tab === 'upload') {
-                // FAB specific styling if needed
-                document.getElementById('nav-upload').classList.add('bg-blue-800');
             }
             
             // Scroll to top
