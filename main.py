@@ -356,9 +356,10 @@ HTML_PAGE = """
             <i class="fa-solid fa-cloud-arrow-up fa-bounce text-6xl text-blue-500 mb-6"></i>
             <h2 class="text-2xl font-bold text-white mb-2">Waking up Server...</h2>
             <p class="text-slate-400 text-sm mb-6">Please wait while our cloud connects. This usually takes 15-30 seconds.</p>
-            <div class="w-48 bg-slate-800 rounded-full h-2 overflow-hidden">
+            <div class="w-48 bg-slate-800 rounded-full h-2 mb-6 overflow-hidden">
                 <div class="bg-blue-500 h-full rounded-full animate-pulse" style="width: 100%"></div>
             </div>
+            <button onclick="closeWakeupOverlay()" class="px-6 py-2 rounded-full border border-slate-600 text-slate-400 hover:bg-slate-800 hover:text-white transition">Cancel</button>
         </div>
 
         <!-- ================= AUTH SECTION ================= -->
@@ -694,7 +695,7 @@ HTML_PAGE = """
                             </div>
                             
                             <div class="flex items-center gap-1 flex-shrink-0">
-                                <button onclick="safeDownload('${f.message_id}')" class="w-10 h-10 rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 active:bg-slate-600 transition" title="Download">
+                                <button onclick="safeDownload(this, '${f.message_id}')" class="w-10 h-10 rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 active:bg-slate-600 transition" title="Download">
                                     <i class="fa-solid fa-arrow-down"></i>
                                 </button>
                                 <button onclick="deleteFile('${f.key}', ${f.message_id})" class="w-10 h-10 rounded-full flex items-center justify-center text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 active:bg-red-500/30 transition" title="Delete">
@@ -707,35 +708,78 @@ HTML_PAGE = """
             });
         }
 
-        // 7. Safe Download Logic (Checks if server is awake)
-        function safeDownload(messageId) {
+        // 7. Smart Download Logic with Animation & Abort Controller
+        let activeDownloadController = null;
+
+        async function safeDownload(btnElement, messageId) {
+            // ১. বাটনের আইকন পরিবর্তন করে অ্যানিমেশন দেওয়া
+            let icon = btnElement.querySelector('i');
+            let originalIconClass = icon.className;
+            icon.className = "fa-solid fa-arrow-down fa-bounce text-blue-400"; // Bouncing arrow animation
+            btnElement.disabled = true; // মাল্টিপল ক্লিক বন্ধ করা
+
             let overlay = document.getElementById('wakeupOverlay');
-            overlay.classList.remove('hidden');
+            let serverResponded = false;
 
-            // Check every 3 seconds if Render is awake
-            let checkInterval = setInterval(async () => {
-                try {
-                    let res = await fetch('/ping');
-                    // Ensure we get JSON from FastAPI, not Render's HTML page
-                    if (res.ok && res.headers.get("content-type").includes("application/json")) {
-                        clearInterval(checkInterval);
-                        overlay.classList.add('hidden');
-                        window.open(`/download/${messageId}`, '_blank');
-                    }
-                } catch(e) {
-                    console.log("Waiting for server to wake up...");
+            // ইউজারের রিকোয়েস্ট ক্যানসেল করার জন্য AbortController
+            activeDownloadController = new AbortController();
+            let signal = activeDownloadController.signal;
+
+            // ২. সার্ভার থেকে রেসপন্স না আসলে ২ সেকেন্ড পর Overlay দেখানো
+            let overlayTimer = setTimeout(() => {
+                if (!serverResponded) {
+                    overlay.classList.remove('hidden');
+                    history.pushState({ modal: 'wakeup' }, ''); // ফোনের ব্যাক বাটন সাপোর্ট করার জন্য State Push
                 }
-            }, 3000); 
+            }, 2000);
 
-            // Auto cancel after 60 seconds if it fails to wake up
-            setTimeout(() => {
-                clearInterval(checkInterval);
-                if(!overlay.classList.contains('hidden')){
+            try {
+                // সার্ভারে পিং করে চেক করা
+                let res = await fetch('/ping', { signal });
+                
+                serverResponded = true;
+                clearTimeout(overlayTimer);
+
+                // যদি Overlay ওপেন থাকে, তবে তা ক্লোজ করে দেওয়া
+                if (!overlay.classList.contains('hidden')) {
                     overlay.classList.add('hidden');
-                    alert("Server is taking too long to wake up. Please try again.");
+                    if (history.state && history.state.modal === 'wakeup') history.back();
                 }
-            }, 60000);
+
+                // রেসপন্স ঠিক থাকলে ডাউনলোড শুরু
+                if (res.ok && res.headers.get("content-type") && res.headers.get("content-type").includes("application/json")) {
+                    window.open(`/download/${messageId}`, '_blank');
+                } else {
+                    setTimeout(() => { window.open(`/download/${messageId}`, '_blank'); }, 2000);
+                }
+            } catch(e) {
+                clearTimeout(overlayTimer);
+                if (e.name !== 'AbortError') { // যদি ইউজার নিজে ক্যানসেল না করে থাকে
+                    overlay.classList.add('hidden');
+                    alert("Network error. Please check your connection.");
+                }
+            } finally {
+                // ৩. ডাউনলোড শুরু বা ফেইল হলে আগের আইকন ফেরত আনা
+                icon.className = originalIconClass;
+                btnElement.disabled = false;
+            }
         }
+
+        // Overlay Close করার ফাংশন (Back Button বা Cancel Button চাপলে)
+        function closeWakeupOverlay() {
+            let overlay = document.getElementById('wakeupOverlay');
+            if (!overlay.classList.contains('hidden')) {
+                overlay.classList.add('hidden');
+                if (activeDownloadController) {
+                    activeDownloadController.abort(); // ব্যাকগ্রাউন্ডের রিকোয়েস্ট বন্ধ করে দেওয়া হবে
+                }
+            }
+        }
+
+        // ফোনের ফিজিক্যাল Back Button চাপলে Overlay রিমুভ হবে
+        window.addEventListener('popstate', function(event) {
+            closeWakeupOverlay();
+        });
 
         // 8. Delete Logic
         async function deleteFile(dbKey, messageId) {
