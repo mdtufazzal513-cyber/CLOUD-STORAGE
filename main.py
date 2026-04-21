@@ -4,6 +4,11 @@ from pyrogram import Client
 import os
 import traceback
 import re
+import asyncio
+
+# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Max 3 concurrent downloads)
+MAX_CONCURRENT_DOWNLOADS = 3
+download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
 
@@ -795,11 +800,21 @@ HTML_PAGE = """
                     if (history.state && history.state.modal === 'wakeup') history.back();
                 }
 
+                // মাল্টিপল ডাউনলোডের জন্য ব্রাউজারের পপআপ ব্লকার এড়াতে Hidden Link পদ্ধতি
+                function triggerDownload(url) {
+                    let a = document.createElement('a');
+                    a.href = url;
+                    // target="_blank" সরিয়ে দেওয়া হয়েছে যাতে ব্রাউজার একে পপআপ না ভাবে
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                }
+
                 // রেসপন্স ঠিক থাকলে ডাউনলোড শুরু
                 if (res.ok && res.headers.get("content-type") && res.headers.get("content-type").includes("application/json")) {
-                    window.open(`/download/${messageId}`, '_blank');
+                    triggerDownload(`/download/${messageId}`);
                 } else {
-                    setTimeout(() => { window.open(`/download/${messageId}`, '_blank'); }, 2000);
+                    setTimeout(() => { triggerDownload(`/download/${messageId}`); }, 2000);
                 }
             } catch(e) {
                 clearTimeout(overlayTimer);
@@ -915,8 +930,14 @@ async def download_file(message_id: int, request: Request):
 
         # Pyrogram থেকে নির্দিষ্ট বাইট (offset) থেকে স্ট্রিম করা
         async def ranged_file_streamer():
-            async for chunk in bot.stream_media(message, offset=start, limit=(end - start + 1)):
-                yield chunk
+            # Semaphore ব্যবহার করে একসাথে নির্দিষ্ট সংখ্যক ফাইল ডাউনলোড হতে দেওয়া হবে
+            # চাপ বেশি থাকলে বাকিগুলো লাইনে (Queue) অপেক্ষা করবে, সার্ভার ক্র্যাশ করবে না!
+            async with download_semaphore:
+                try:
+                    async for chunk in bot.stream_media(message, offset=start, limit=(end - start + 1)):
+                        yield chunk
+                except Exception as e:
+                    print(f"Stream interrupted/canceled by user: {e}")
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
