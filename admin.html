@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Cloud - Admin Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-database-compat.js"></script>
+
+    <style>
+        body { background: #0f172a; color: white; min-height: 100vh; font-family: sans-serif; }
+        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .hidden { display: none !important; }
+        
+        /* Mobile Bottom Nav Active State */
+        .nav-btn.active { color: #60a5fa; }
+        /* Desktop Sidebar Active State */
+        .sidebar-btn.active { background: #1e293b; border-left: 4px solid #60a5fa; color: #60a5fa; }
+    </style>
+</head>
+<body class="flex flex-col md:flex-row">
+
+    <!-- Auth Section (Login) -->
+    <div id="authSection" class="w-full max-w-md mx-auto glass p-8 rounded-2xl mt-20 shadow-2xl text-center">
+        <h2 class="text-3xl font-bold mb-2 text-red-400"><i class="fa-solid fa-user-shield"></i> Admin Panel</h2>
+        <p class="text-gray-400 mb-6 text-sm">Strictly restricted to administrators</p>
+        <input type="email" id="email" placeholder="Admin Email" class="w-full mb-4 p-3 rounded bg-gray-800 border border-gray-600 focus:outline-none focus:border-red-400">
+        <input type="password" id="password" placeholder="Password" class="w-full mb-6 p-3 rounded bg-gray-800 border border-gray-600 focus:outline-none focus:border-red-400">
+        <button onclick="login()" class="w-full bg-red-600 p-3 rounded-lg hover:bg-red-500 transition font-bold">Login as Admin</button>
+        <p id="authError" class="text-red-400 mt-4 text-sm font-semibold"></p>
+    </div>
+
+    <!-- Main Admin Layout (Hidden until logged in) -->
+    <div id="appSection" class="hidden w-full h-screen flex flex-col md:flex-row">
+        
+        <!-- Desktop Sidebar -->
+        <div class="hidden md:flex flex-col w-64 glass h-screen fixed left-0 top-0 pt-6">
+            <h2 class="text-2xl font-bold text-center text-red-400 border-b border-gray-700 pb-4 mb-4"><i class="fa-solid fa-cloud"></i> Admin</h2>
+            <nav class="flex-1 px-4 space-y-2">
+                <button onclick="showTab('dashboard')" id="sidebar-dashboard" class="sidebar-btn active w-full flex items-center p-3 rounded-r-lg hover:bg-gray-800 transition">
+                    <i class="fa-solid fa-chart-pie mr-3"></i> Dashboard
+                </button>
+                <button onclick="showTab('allFiles')" id="sidebar-allFiles" class="sidebar-btn w-full flex items-center p-3 rounded-r-lg hover:bg-gray-800 transition">
+                    <i class="fa-solid fa-folder-open mr-3"></i> All Files
+                </button>
+                <button onclick="showTab('settings')" id="sidebar-settings" class="sidebar-btn w-full flex items-center p-3 rounded-r-lg hover:bg-gray-800 transition">
+                    <i class="fa-solid fa-gear mr-3"></i> Settings
+                </button>
+            </nav>
+            <div class="p-4 border-t border-gray-700">
+                <button onclick="logout()" class="w-full bg-gray-800 p-2 rounded hover:bg-red-600 transition text-sm">
+                    <i class="fa-solid fa-right-from-bracket mr-2"></i> Logout
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="flex-1 md:ml-64 p-4 md:p-8 pb-24 md:pb-8 overflow-y-auto">
+            
+            <!-- Dashboard Tab -->
+            <div id="dashboardTab">
+                <h1 class="text-3xl font-bold mb-8">Dashboard Overview</h1>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Total Users Card -->
+                    <div class="glass p-6 rounded-2xl flex items-center shadow-lg border-l-4 border-blue-500">
+                        <div class="p-4 bg-blue-500/20 rounded-full mr-6">
+                            <i class="fa-solid fa-users text-4xl text-blue-400"></i>
+                        </div>
+                        <div>
+                            <p class="text-gray-400 text-sm">Total Users</p>
+                            <h2 id="totalUsersCount" class="text-4xl font-bold">0</h2>
+                        </div>
+                    </div>
+                    <!-- Total Files Card -->
+                    <div class="glass p-6 rounded-2xl flex items-center shadow-lg border-l-4 border-green-500">
+                        <div class="p-4 bg-green-500/20 rounded-full mr-6">
+                            <i class="fa-solid fa-file-invoice text-4xl text-green-400"></i>
+                        </div>
+                        <div>
+                            <p class="text-gray-400 text-sm">Total Files Uploaded</p>
+                            <h2 id="totalFilesCount" class="text-4xl font-bold">0</h2>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- All Files Tab -->
+            <div id="allFilesTab" class="hidden">
+                <h1 class="text-3xl font-bold mb-6">Manage User Files</h1>
+                <div class="glass rounded-xl overflow-hidden shadow-lg">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm whitespace-nowrap">
+                            <thead class="bg-gray-800 text-gray-300">
+                                <tr>
+                                    <th class="p-4">User UID</th>
+                                    <th class="p-4">File Name</th>
+                                    <th class="p-4">Size</th>
+                                    <th class="p-4 text-center">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="allFilesList" class="divide-y divide-gray-700">
+                                <!-- JS will populate this -->
+                                <tr><td colspan="4" class="p-4 text-center text-gray-400">Loading files...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div id="settingsTab" class="hidden">
+                <h1 class="text-3xl font-bold mb-6">Panel Settings</h1>
+                <div class="glass p-8 rounded-2xl text-center shadow-lg">
+                    <i class="fa-solid fa-screwdriver-wrench text-6xl text-gray-500 mb-4"></i>
+                    <h2 class="text-xl font-semibold text-gray-300">No settings available yet.</h2>
+                    <p class="text-gray-500 mt-2">More features will be added in the future.</p>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Mobile Bottom Nav (App like) -->
+        <div class="md:hidden fixed bottom-0 left-0 w-full glass border-t border-gray-700 flex justify-around items-center pb-safe pt-2 pb-2 z-50">
+            <button onclick="showTab('dashboard')" id="nav-dashboard" class="nav-btn active flex flex-col items-center p-2 text-gray-400 transition">
+                <i class="fa-solid fa-chart-pie text-xl mb-1"></i>
+                <span class="text-[10px]">Dashboard</span>
+            </button>
+            <button onclick="showTab('allFiles')" id="nav-allFiles" class="nav-btn flex flex-col items-center p-2 text-gray-400 transition">
+                <i class="fa-solid fa-folder-open text-xl mb-1"></i>
+                <span class="text-[10px]">All Files</span>
+            </button>
+            <button onclick="showTab('settings')" id="nav-settings" class="nav-btn flex flex-col items-center p-2 text-gray-400 transition">
+                <i class="fa-solid fa-gear text-xl mb-1"></i>
+                <span class="text-[10px]">Settings</span>
+            </button>
+            <button onclick="logout()" class="flex flex-col items-center p-2 text-red-500 transition">
+                <i class="fa-solid fa-right-from-bracket text-xl mb-1"></i>
+                <span class="text-[10px]">Logout</span>
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        // আপনার লাইভ সার্ভারের লিংকটি এখানে দিন (অবশ্যই শেষে / দিবেন না)
+        const API_BASE_URL = "https://cloud-storage-ozsx.onrender.com"; 
+
+        // এখানে আপনার ফায়ারবেস UID টি বসিয়ে দিন
+        const allowedAdminsString = "oAK6oVAdUBetVRBKkbwnUKsHr8A2"; 
+        const allowedAdmins = allowedAdminsString.split(",").map(uid => uid.trim());
+
+        // Firebase Configuration (Same as main site)
+        const firebaseConfig = {
+            apiKey: "AIzaSyCjv-rmlT00GgTpA0UQ2NnXIyOjXn6ss_s",
+            authDomain: "file-to-stream.firebaseapp.com",
+            databaseURL: "https://file-to-stream-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "file-to-stream",
+            storageBucket: "file-to-stream.firebasestorage.app",
+            messagingSenderId: "529016978874",
+            appId: "1:529016978874:web:13ae6ef1cd9fa97d76f183"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.database();
+        let currentUser = null;
+
+        // Auth Listener & Admin Check
+        auth.onAuthStateChanged((user) => {
+            if (user) {
+                if (allowedAdmins.includes(user.uid) || allowedAdminsString === "YOUR_ADMIN_UID_HERE") {
+                    // Valid Admin
+                    currentUser = user;
+                    document.getElementById('authSection').classList.add('hidden');
+                    document.getElementById('appSection').classList.remove('hidden');
+                    document.getElementById('appSection').classList.add('flex');
+                    fetchAllData(); // Load Admin Data
+                } else {
+                    // Not an admin
+                    auth.signOut();
+                    document.getElementById('authError').innerText = "Access Denied: You are not an admin.";
+                }
+            } else {
+                currentUser = null;
+                document.getElementById('authSection').classList.remove('hidden');
+                document.getElementById('appSection').classList.add('hidden');
+                document.getElementById('appSection').classList.remove('flex');
+            }
+        });
+
+        function login() {
+            let email = document.getElementById('email').value;
+            let pass = document.getElementById('password').value;
+            document.getElementById('authError').innerText = "Checking credentials...";
+            auth.signInWithEmailAndPassword(email, pass).catch(err => {
+                document.getElementById('authError').innerText = err.message;
+            });
+        }
+
+        function logout() { auth.signOut(); }
+
+        // Tab Navigation Logic
+        function showTab(tabId) {
+            // Hide all tabs
+            ['dashboard', 'allFiles', 'settings'].forEach(id => {
+                document.getElementById(id + 'Tab').classList.add('hidden');
+                // Remove active class from desktop sidebar
+                document.getElementById('sidebar-' + id).classList.remove('active');
+                // Remove active class from mobile nav
+                document.getElementById('nav-' + id).classList.remove('active', 'text-blue-400');
+            });
+
+            // Show selected tab
+            document.getElementById(tabId + 'Tab').classList.remove('hidden');
+            document.getElementById('sidebar-' + tabId).classList.add('active');
+            document.getElementById('nav-' + tabId).classList.add('active', 'text-blue-400');
+        }
+
+        // Fetch All Users & Files Data
+        function fetchAllData() {
+            db.ref('users').on('value', (snapshot) => {
+                let totalUsers = 0;
+                let totalFiles = 0;
+                let allFilesArray = [];
+
+                if (snapshot.exists()) {
+                    snapshot.forEach(userSnap => {
+                        totalUsers++;
+                        let uid = userSnap.key;
+                        let filesSnap = userSnap.child('files');
+                        
+                        if (filesSnap.exists()) {
+                            filesSnap.forEach(fileSnap => {
+                                totalFiles++;
+                                allFilesArray.push({
+                                    uid: uid,
+                                    dbKey: fileSnap.key,
+                                    ...fileSnap.val()
+                                });
+                            });
+                        }
+                    });
+                }
+
+                // Update Dashboard Stats
+                document.getElementById('totalUsersCount').innerText = totalUsers;
+                document.getElementById('totalFilesCount').innerText = totalFiles;
+
+                // Sort files by newest
+                allFilesArray.sort((a, b) => b.timestamp - a.timestamp);
+                renderFilesTable(allFilesArray);
+            });
+        }
+
+        // Render Table in 'All Files' Tab
+        function renderFilesTable(files) {
+            let tbody = document.getElementById('allFilesList');
+            tbody.innerHTML = '';
+
+            if (files.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-400">No files uploaded yet.</td></tr>';
+                return;
+            }
+
+            files.forEach(f => {
+                let sizeMB = (f.file_size / (1024 * 1024)).toFixed(2);
+                let shortUid = f.uid.substring(0, 8) + '...';
+                let shortName = f.file_name.length > 25 ? f.file_name.substring(0, 25) + '...' : f.file_name;
+
+                let tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-800/50 transition border-b border-gray-700/50";
+                tr.innerHTML = `
+                    <td class="p-4 text-xs font-mono text-gray-400" title="${f.uid}">${shortUid}</td>
+                    <td class="p-4 font-semibold text-blue-300" title="${f.file_name}">${shortName}</td>
+                    <td class="p-4 text-gray-400 text-sm">${sizeMB} MB</td>
+                    <td class="p-4 text-center">
+                        <a href="${API_BASE_URL}/download/${f.message_id}" target="_blank" class="text-green-500 hover:text-green-400 mr-4 transition" title="Download">
+                            <i class="fa-solid fa-download"></i>
+                        </a>
+                        <button onclick="deleteAnyFile('${f.uid}', '${f.dbKey}', ${f.message_id})" class="text-red-500 hover:text-red-400 transition" title="Delete">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // Admin Delete Logic (Deletes from Telegram & Firebase)
+        async function deleteAnyFile(uid, dbKey, messageId) {
+            if(!confirm("⚠️ Admin Alert: Are you sure you want to permanently delete this user's file?")) return;
+            
+            try {
+                // Remove from Telegram (via Backend API)
+                let response = await fetch(`${API_BASE_URL}/delete/${messageId}`, { method: 'DELETE' });
+                if(response.ok) {
+                    // Remove from Firebase Realtime DB
+                    db.ref(`users/${uid}/files/${dbKey}`).remove();
+                } else {
+                    alert("Error deleting from Telegram Server.");
+                }
+            } catch(e) {
+                alert("Network error while deleting file.");
+            }
+        }
+    </script>
+</body>
+</html>
