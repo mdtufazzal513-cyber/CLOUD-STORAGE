@@ -6,8 +6,8 @@ import traceback
 import re
 import asyncio
 
-# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Max 3 concurrent downloads)
-MAX_CONCURRENT_DOWNLOADS = 3
+# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Max 1 concurrent download to prevent crashes)
+MAX_CONCURRENT_DOWNLOADS = 1
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
@@ -356,15 +356,10 @@ HTML_PAGE = """
 
     <div class="app-container">
 
-        <!-- ================= WAKE UP OVERLAY ================= -->
-        <div id="wakeupOverlay" class="hidden fixed inset-0 bg-slate-900/95 z-[100] backdrop-blur-md flex flex-col items-center justify-center text-center px-6 transition-opacity duration-300">
-            <i class="fa-solid fa-cloud-arrow-up fa-bounce text-6xl text-blue-500 mb-6"></i>
-            <h2 class="text-2xl font-bold text-white mb-2">Waking up Server...</h2>
-            <p class="text-slate-400 text-sm mb-6">Please wait while our cloud connects. This usually takes 15-30 seconds.</p>
-            <div class="w-48 bg-slate-800 rounded-full h-2 mb-6 overflow-hidden">
-                <div class="bg-blue-500 h-full rounded-full animate-pulse" style="width: 100%"></div>
-            </div>
-            <button onclick="closeWakeupOverlay()" class="px-6 py-2 rounded-full border border-slate-600 text-slate-400 hover:bg-slate-800 hover:text-white transition">Cancel</button>
+        <!-- ================= TOAST NOTIFICATION (Background Process) ================= -->
+        <div id="toastNotification" class="fixed top-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-5 py-3 rounded-full shadow-2xl flex items-center gap-3 z-[100] transition-all duration-300 opacity-0 -translate-y-10 pointer-events-none border border-slate-700">
+            <i class="fa-solid fa-circle-notch fa-spin text-blue-400 text-lg"></i>
+            <span id="toastMessage" class="text-sm font-semibold tracking-wide">Processing, please wait...</span>
         </div>
 
         <!-- ================= AUTH SECTION ================= -->
@@ -578,18 +573,19 @@ HTML_PAGE = """
             document.querySelector('main').scrollTo(0,0);
         }
 
-        // 5. Multi-Upload System with Progress & Cancel Support
+        // 5. Multi-Upload System with Queue (Sequential) & Cancel Support
+        let uploadQueue = [];
+        let isUploading = false;
+
         document.getElementById('fileInput').addEventListener('change', function() {
             let files = this.files;
             if (files.length === 0) return;
 
             let uploadListContainer = document.getElementById('uploadListContainer');
 
-            // প্রতিটি ফাইলের জন্য আলাদা লুপ
             Array.from(files).forEach((file, index) => {
                 let fileId = 'upload_' + Date.now() + '_' + index;
                 
-                // ডাইনামিক আপলোড কার্ড তৈরি করা
                 let uploadCard = document.createElement('div');
                 uploadCard.className = "bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-md fade-in relative";
                 uploadCard.id = fileId;
@@ -602,31 +598,60 @@ HTML_PAGE = """
                         </div>
                         <div class="flex items-center gap-3">
                             <span class="text-xs font-bold text-slate-300 percent-text w-8 text-right">0%</span>
-                            <!-- Cancel Button -->
                             <button class="w-8 h-8 rounded-full bg-slate-700 text-red-400 hover:bg-red-500 hover:text-white flex items-center justify-center transition cancel-btn" title="Cancel Upload">
                                 <i class="fa-solid fa-xmark"></i>
                             </button>
                         </div>
                     </div>
                     <div class="w-full bg-slate-900 rounded-full h-2 mb-2 overflow-hidden border border-slate-700">
-                        <div class="bg-blue-500 h-full rounded-full transition-all duration-300 progress-bar" style="width: 0%"></div>
+                        <div class="bg-slate-600 h-full rounded-full transition-all duration-300 progress-bar" style="width: 0%"></div>
                     </div>
-                    <p class="text-[11px] font-semibold text-slate-400 status-text tracking-wide">Preparing...</p>
+                    <p class="text-[11px] font-semibold text-slate-400 status-text tracking-wide">Waiting in queue...</p>
                 `;
                 
                 uploadListContainer.appendChild(uploadCard);
-                startSingleUpload(file, uploadCard);
+                
+                // আপলোড শুরু না করে লাইনে দাঁড় করানো হলো
+                uploadQueue.push({ file: file, card: uploadCard });
             });
             
-            this.value = ""; // পরেরবার যেন একই ফাইল সিলেক্ট করা যায়
+            this.value = ""; 
+            processNextUpload(); // লাইনের প্রথমটিকে শুরু করার জন্য কল
         });
 
-        function startSingleUpload(file, card) {
+        // লাইনের পরবর্তী ফাইল প্রসেস করার ফাংশন
+        function processNextUpload() {
+            if (isUploading || uploadQueue.length === 0) return;
+            
+            let currentItem = uploadQueue.shift(); // লাইনের প্রথম ফাইল বের করা
+            isUploading = true;
+            startSingleUpload(currentItem.file, currentItem.card);
+        }
+
+        // আপলোডের ক্ষেত্রেও async ব্যবহার করতে হবে যাতে সার্ভারের জন্য ওয়েট করতে পারে
+        async function startSingleUpload(file, card) {
             let progressBar = card.querySelector('.progress-bar');
             let percentText = card.querySelector('.percent-text');
             let sizeText = card.querySelector('.size-text');
             let statusText = card.querySelector('.status-text');
             let cancelBtn = card.querySelector('.cancel-btn');
+
+            // সার্ভার ঘুমাচ্ছে কি না তা আগে চেক করা
+            try {
+                if (Date.now() - lastAwakeTime >= 10 * 60 * 1000) {
+                    statusText.innerText = "Connecting to cloud...";
+                    statusText.className = "text-[11px] font-semibold text-yellow-400 status-text tracking-wide";
+                }
+                await ensureCloudIsAwake(); // সার্ভার পুরোপুরি না জাগা পর্যন্ত আপলোড শুরু হবে না
+            } catch(e) {
+                handleFailedUpload("Network Error!");
+                return;
+            }
+
+            // আপলোড শুরু হলে কালার নীল হবে
+            progressBar.classList.replace('bg-slate-600', 'bg-blue-500');
+            statusText.innerText = "Uploading to Server...";
+            statusText.className = "text-[11px] font-semibold text-blue-400 status-text tracking-wide";
 
             let formData = new FormData();
             formData.append("file", file);
@@ -634,17 +659,21 @@ HTML_PAGE = """
             let xhr = new XMLHttpRequest();
             xhr.open("POST", "/upload/", true);
 
-            // ক্যানসেল বাটন লজিক
+            // Cancel Button
             cancelBtn.onclick = () => {
-                xhr.abort(); // রিকোয়েস্ট ক্যানসেল করা
+                xhr.abort();
                 statusText.innerText = "Upload Cancelled";
                 statusText.className = "text-[11px] font-semibold text-red-400 status-text tracking-wide";
                 progressBar.classList.replace('bg-blue-500', 'bg-red-500');
                 cancelBtn.classList.add('hidden');
-                setTimeout(() => { card.style.display = 'none'; }, 2000); // ২ সেকেন্ড পর কার্ড গায়েব
+                
+                // ক্যানসেল হলে সাথে সাথে লাইনের পরেরটি শুরু হবে
+                isUploading = false;
+                processNextUpload();
+                
+                setTimeout(() => { card.style.display = 'none'; }, 2000);
             };
 
-            // আপলোড প্রোগ্রেস লজিক
             xhr.upload.onprogress = function(event) {
                 if (event.lengthComputable) {
                     let percentComplete = Math.round((event.loaded / event.total) * 100);
@@ -660,12 +689,11 @@ HTML_PAGE = """
                     if (percentComplete === 100) {
                         statusText.innerText = "Processing in cloud ☁️";
                         statusText.className = "text-[11px] font-semibold text-yellow-400 status-text tracking-wide animate-pulse";
-                        cancelBtn.classList.add('hidden'); // ক্লাউডে প্রসেসিং শুরু হলে আর ক্যানসেল করা যাবে না
+                        cancelBtn.classList.add('hidden');
                     }
                 }
             };
 
-            // আপলোড কমপ্লিট বা ফেইল লজিক
             xhr.onload = function() {
                 if (xhr.status === 200) {
                     try {
@@ -675,7 +703,6 @@ HTML_PAGE = """
                             statusText.className = "text-[11px] font-semibold text-green-400 status-text tracking-wide";
                             progressBar.classList.replace('bg-blue-500', 'bg-green-500');
                             
-                            // ফায়ারবেসে সেভ করা
                             db.ref('users/' + currentUser.uid + '/files').push({
                                 file_name: result.file_name,
                                 file_size: result.file_size,
@@ -683,28 +710,40 @@ HTML_PAGE = """
                                 timestamp: firebase.database.ServerValue.TIMESTAMP
                             });
 
-                            // সফল হলে ৩ সেকেন্ড পর কার্ড রিমুভ হয়ে যাবে
                             setTimeout(() => { card.style.display = 'none'; }, 3000);
+                            finishUploadTask(); // সফল হলে লাইনের পরেরটি শুরু হবে
+                            return;
                         }
                     } catch(e) {
-                        statusText.innerText = "Server waking up. Retry!";
-                        statusText.className = "text-[11px] font-semibold text-yellow-400 status-text tracking-wide";
-                        cancelBtn.classList.remove('hidden');
+                        handleFailedUpload("Server waking up. Retry!");
+                        return;
                     }
-                } else {
-                    statusText.innerText = "Upload Failed!";
-                    statusText.className = "text-[11px] font-semibold text-red-400 status-text tracking-wide";
-                    progressBar.classList.replace('bg-blue-500', 'bg-red-500');
                 }
+                handleFailedUpload("Upload Failed!");
             };
 
             xhr.onerror = function() {
-                statusText.innerText = "Network Error!";
-                statusText.className = "text-[11px] font-semibold text-red-400 status-text tracking-wide";
-                progressBar.classList.replace('bg-blue-500', 'bg-red-500');
+                handleFailedUpload("Network Error!");
             };
 
             xhr.send(formData);
+
+            function finishUploadTask() {
+                isUploading = false;
+                processNextUpload();
+            }
+
+            function handleFailedUpload(msg) {
+                statusText.innerText = msg;
+                statusText.className = "text-[11px] font-semibold text-red-400 status-text tracking-wide";
+                progressBar.classList.replace('bg-blue-500', 'bg-red-500');
+                cancelBtn.classList.add('hidden');
+                
+                finishUploadTask(); // ফেইল হলেও লাইনের পরেরটি শুরু হবে
+                
+                // আপলোড ফেইল হলে ৪ সেকেন্ড পর অটো রিমুভ
+                setTimeout(() => { card.style.display = 'none'; }, 4000);
+            }
         }
 
         // 6. Realtime Database Fetch & Render (Native Card UI)
@@ -762,97 +801,92 @@ HTML_PAGE = """
             });
         }
 
-        // 7. Smart Download Logic with Animation & Abort Controller
-        let activeDownloadController = null;
+        // 7. Universal Cloud Wake-up System (Master Function)
+        let lastAwakeTime = 0; 
+
+        function showToast(msg) {
+            let toast = document.getElementById('toastNotification');
+            if(toast) {
+                document.getElementById('toastMessage').innerText = msg;
+                toast.classList.remove('opacity-0', '-translate-y-10');
+                toast.classList.add('opacity-100', 'translate-y-0');
+            }
+        }
+
+        function hideToast() {
+            let toast = document.getElementById('toastNotification');
+            if(toast) {
+                toast.classList.remove('opacity-100', 'translate-y-0');
+                toast.classList.add('opacity-0', '-translate-y-10');
+            }
+        }
+
+        // এই ফাংশন আপলোড, ডাউনলোড এবং ডিলিট করার আগে চেক করবে সার্ভার জাগানো আছে কিনা
+        async function ensureCloudIsAwake() {
+            if (Date.now() - lastAwakeTime < 10 * 60 * 1000) return true; // ১০ মিনিটের ভেতর থাকলে অলরেডি সচল
+
+            let serverResponded = false;
+            let toastTimer = setTimeout(() => {
+                if (!serverResponded) showToast("Connecting to cloud...");
+            }, 1000);
+
+            try {
+                let res = await fetch('/ping');
+                serverResponded = true;
+                clearTimeout(toastTimer);
+                hideToast();
+                
+                lastAwakeTime = Date.now();
+                if (!(res.ok && res.headers.get("content-type") && res.headers.get("content-type").includes("application/json"))) {
+                    await new Promise(r => setTimeout(r, 2000)); // Render পেজ আসলে ২ সেকেন্ড ওয়েট
+                }
+                return true;
+            } catch(e) {
+                clearTimeout(toastTimer);
+                hideToast();
+                throw new Error("Network error.");
+            }
+        }
+
+        // 8. Smart Download Logic
+        function triggerDownload(url) {
+            let a = document.createElement('a');
+            a.href = url;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
 
         async function safeDownload(btnElement, messageId) {
-            // ১. বাটনের আইকন পরিবর্তন করে অ্যানিমেশন দেওয়া
             let icon = btnElement.querySelector('i');
             let originalIconClass = icon.className;
-            icon.className = "fa-solid fa-arrow-down fa-bounce text-blue-400"; // Bouncing arrow animation
-            btnElement.disabled = true; // মাল্টিপল ক্লিক বন্ধ করা
-
-            let overlay = document.getElementById('wakeupOverlay');
-            let serverResponded = false;
-
-            // ইউজারের রিকোয়েস্ট ক্যানসেল করার জন্য AbortController
-            activeDownloadController = new AbortController();
-            let signal = activeDownloadController.signal;
-
-            // ২. সার্ভার থেকে রেসপন্স না আসলে ২ সেকেন্ড পর Overlay দেখানো
-            let overlayTimer = setTimeout(() => {
-                if (!serverResponded) {
-                    overlay.classList.remove('hidden');
-                    history.pushState({ modal: 'wakeup' }, ''); // ফোনের ব্যাক বাটন সাপোর্ট করার জন্য State Push
-                }
-            }, 2000);
+            icon.className = "fa-solid fa-arrow-down fa-bounce text-blue-400";
+            btnElement.disabled = true;
 
             try {
-                // সার্ভারে পিং করে চেক করা
-                let res = await fetch('/ping', { signal });
-                
-                serverResponded = true;
-                clearTimeout(overlayTimer);
-
-                // যদি Overlay ওপেন থাকে, তবে তা ক্লোজ করে দেওয়া
-                if (!overlay.classList.contains('hidden')) {
-                    overlay.classList.add('hidden');
-                    if (history.state && history.state.modal === 'wakeup') history.back();
-                }
-
-                // মাল্টিপল ডাউনলোডের জন্য ব্রাউজারের পপআপ ব্লকার এড়াতে Hidden Link পদ্ধতি
-                function triggerDownload(url) {
-                    let a = document.createElement('a');
-                    a.href = url;
-                    // target="_blank" সরিয়ে দেওয়া হয়েছে যাতে ব্রাউজার একে পপআপ না ভাবে
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                }
-
-                // রেসপন্স ঠিক থাকলে ডাউনলোড শুরু
-                if (res.ok && res.headers.get("content-type") && res.headers.get("content-type").includes("application/json")) {
-                    triggerDownload(`/download/${messageId}`);
-                } else {
-                    setTimeout(() => { triggerDownload(`/download/${messageId}`); }, 2000);
-                }
+                await ensureCloudIsAwake(); // সার্ভার চেক বা জাগানোর মাস্টার কল
+                triggerDownload(`/download/${messageId}`);
             } catch(e) {
-                clearTimeout(overlayTimer);
-                if (e.name !== 'AbortError') { // যদি ইউজার নিজে ক্যানসেল না করে থাকে
-                    overlay.classList.add('hidden');
-                    alert("Network error. Please check your connection.");
-                }
+                alert("Network error. Please check your connection.");
             } finally {
-                // ৩. ডাউনলোড শুরু বা ফেইল হলে আগের আইকন ফেরত আনা
-                icon.className = originalIconClass;
-                btnElement.disabled = false;
+                setTimeout(() => {
+                    icon.className = originalIconClass;
+                    btnElement.disabled = false;
+                }, 1000);
             }
         }
 
-        // Overlay Close করার ফাংশন (Back Button বা Cancel Button চাপলে)
-        function closeWakeupOverlay() {
-            let overlay = document.getElementById('wakeupOverlay');
-            if (!overlay.classList.contains('hidden')) {
-                overlay.classList.add('hidden');
-                if (activeDownloadController) {
-                    activeDownloadController.abort(); // ব্যাকগ্রাউন্ডের রিকোয়েস্ট বন্ধ করে দেওয়া হবে
-                }
-            }
-        }
-
-        // ফোনের ফিজিক্যাল Back Button চাপলে Overlay রিমুভ হবে
-        window.addEventListener('popstate', function(event) {
-            closeWakeupOverlay();
-        });
-
-        // 8. Delete Logic
+        // 9. Smart Delete Logic
         async function deleteFile(dbKey, messageId) {
-            // Using a simple confirm, but you could implement a nice custom modal later for real app feel
             if(!confirm("Delete this file permanently?")) return;
             try {
+                showToast("Deleting...");
+                await ensureCloudIsAwake(); // সার্ভার চেক বা জাগানোর মাস্টার কল
                 await fetch(`/delete/${messageId}`, { method: 'DELETE' });
                 db.ref(`users/${currentUser.uid}/files/${dbKey}`).remove();
+                hideToast();
             } catch(e) {
+                hideToast();
                 alert("Error deleting file.");
             }
         }
