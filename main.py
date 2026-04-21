@@ -930,14 +930,20 @@ async def download_file(message_id: int, request: Request):
 
         # Pyrogram থেকে নির্দিষ্ট বাইট (offset) থেকে স্ট্রিম করা
         async def ranged_file_streamer():
-            # Semaphore ব্যবহার করে একসাথে নির্দিষ্ট সংখ্যক ফাইল ডাউনলোড হতে দেওয়া হবে
-            # চাপ বেশি থাকলে বাকিগুলো লাইনে (Queue) অপেক্ষা করবে, সার্ভার ক্র্যাশ করবে না!
-            async with download_semaphore:
+            # স্লট ফাঁকা হওয়া মাত্রই অটোমেটিক ওয়েটিং থেকে পরের ফাইল এখানে ঢুকে যাবে
+            async with download_semaphore: 
                 try:
                     async for chunk in bot.stream_media(message, offset=start, limit=(end - start + 1)):
+                        # ইউজার ব্রাউজার থেকে ডাউনলোড ক্যানসেল বা পজ করলে সাথে সাথে কানেকশন ব্রেক হবে
+                        if await request.is_disconnected():
+                            print("User canceled the download. Releasing slot for the next waiting file...")
+                            break
                         yield chunk
+                except asyncio.CancelledError:
+                    # FastAPI ক্লায়েন্ট ডিসকানেক্ট হলে এই এরর দেয়, এটি ধরা মানে স্লট সাথে সাথে ফ্রি করে দেওয়া
+                    print("Download task was canceled by browser. Slot freed.")
                 except Exception as e:
-                    print(f"Stream interrupted/canceled by user: {e}")
+                    print(f"Stream interrupted: {e}")
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
