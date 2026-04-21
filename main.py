@@ -6,8 +6,8 @@ import traceback
 import re
 import asyncio
 
-# ব্রাউজারের নিজস্ব Download Manager-কে Pause/Resume এবং Queue কন্ট্রোল করার সুযোগ দিতে লিমিট বাড়ানো হলো
-MAX_CONCURRENT_DOWNLOADS = 20
+# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Max 1 concurrent download to prevent crashes)
+MAX_CONCURRENT_DOWNLOADS = 1
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
@@ -1004,16 +1004,17 @@ async def download_file(message_id: int, request: Request):
 
         # Pyrogram থেকে নির্দিষ্ট বাইট (offset) থেকে স্ট্রিম করা
         async def ranged_file_streamer():
-            try:
-                # সার্ভার থেকে লিমিট মুছে দেওয়া হলো, যাতে ব্রাউজার স্বাধীনভাবে Pause/Resume/Queue কন্ট্রোল করতে পারে
-                async for chunk in bot.stream_media(message, offset=start, limit=(end - start + 1)):
-                    if await request.is_disconnected():
-                        break
-                    yield chunk
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                pass
+            async with download_semaphore: 
+                try:
+                    async for chunk in bot.stream_media(message, offset=start, limit=(end - start + 1)):
+                        if await request.is_disconnected():
+                            print("User canceled the download. Releasing slot...")
+                            break
+                        yield chunk
+                except asyncio.CancelledError:
+                    print("Download task was canceled by browser. Slot freed.")
+                except Exception as e:
+                    print(f"Stream interrupted: {e}")
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
