@@ -6,8 +6,8 @@ import traceback
 import re
 import asyncio
 
-# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Max 1 concurrent download to prevent crashes)
-MAX_CONCURRENT_DOWNLOADS = 1
+# ব্রাউজারের নিজস্ব Download Manager-কে Pause/Resume এবং Queue কন্ট্রোল করার সুযোগ দিতে লিমিট বাড়ানো হলো
+MAX_CONCURRENT_DOWNLOADS = 20
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
