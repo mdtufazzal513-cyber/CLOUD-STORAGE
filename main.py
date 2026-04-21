@@ -640,8 +640,12 @@ HTML_PAGE = """
                 uploadQueue.push({ file: file, card: uploadCard });
             });
             
-            this.value = ""; 
             processNextUpload(); // লাইনের প্রথমটিকে শুরু করার জন্য কল
+        });
+
+        // ব্রাউজার যেন ফাইল থেকে ডাটা মুছে না ফেলে, তাই ক্লিক করার সময় ইনপুট ক্লিয়ার করা হলো
+        document.getElementById('fileInput').addEventListener('click', function() {
+            this.value = null;
         });
 
         // লাইনের পরবর্তী ফাইল প্রসেস করার ফাংশন
