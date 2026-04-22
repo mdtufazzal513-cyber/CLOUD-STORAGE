@@ -83,8 +83,8 @@ async def upload_file(file: UploadFile = File(...)):
         return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
 # --- Resumable Download System (Pause/Resume Support) ---
-@app.get("/download/{message_id}")
-async def download_file(message_id: int, request: Request):
+@app.get("/download/{message_id}/{file_name}")
+async def download_file(message_id: int, file_name: str, request: Request):
     try:
         message = await bot.get_messages(CHANNEL_ID, message_id)
         
