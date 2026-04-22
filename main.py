@@ -8,8 +8,8 @@ import re
 import asyncio
 import urllib.parse
 
-# সার্ভারের স্পিড বুস্ট করার জন্য ট্রাফিক কন্ট্রোলার (Max 5 concurrent downloads)
-MAX_CONCURRENT_DOWNLOADS = 5
+# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Android Download Manager multiple thread support)
+MAX_CONCURRENT_DOWNLOADS = 15
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
@@ -83,7 +83,7 @@ async def upload_file(file: UploadFile = File(...)):
         return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
 # --- Resumable Download System (Pause/Resume Support) ---
-@app.get("/download/{message_id}/{file_name}")
+@app.get("/download/{message_id}/{file_name:path}")
 async def download_file(message_id: int, file_name: str, request: Request):
     try:
         message = await bot.get_messages(CHANNEL_ID, message_id)
