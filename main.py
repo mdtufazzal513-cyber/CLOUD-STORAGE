@@ -68,18 +68,23 @@ async def upload_file(file: UploadFile = File(...)):
     try:
         safe_filename = file.filename.replace(" ", "_")
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
+        file_size = 0
         
+        # Free Server Protection: RAM বাঁচানোর জন্য ফাইলটি 1MB করে ছোট ছোট খণ্ডে (Chunk) সেভ করা হচ্ছে
         with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
-            file_size = len(content)
+            while True:
+                chunk = await file.read(1024 * 1024) # 1 MB chunk
+                if not chunk:
+                    break
+                buffer.write(chunk)
+                file_size += len(chunk)
 
+        # Pyrogram ফাইলটিকে টেলিগ্রামে আপলোড করবে (এটি ডিফল্টভাবেই স্মার্ট স্ট্রিমিং ব্যবহার করে)
         sent_message = await bot.send_document(chat_id=CHANNEL_ID, document=file_path)
         
         if os.path.exists(file_path):
             os.remove(file_path)
 
-        # Firebase-এ ডাটা সেভ করার জন্য শুধু ইনফরমেশন রিটার্ন করছি।
         return {"status": "success", "file_name": file.filename, "file_size": file_size, "message_id": sent_message.id}
 
     except Exception as e:
@@ -155,6 +160,15 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
         files = json.loads(files_data)
         if not files:
             return JSONResponse(status_code=400, content={"error": "No files found to zip"})
+            
+        # Free Server Protection: 500 MB এর বেশি হলে জিপ বাতিল করা হবে
+        total_size_bytes = sum(f.get("file_size", 0) for f in files)
+        MAX_ZIP_SIZE = 500 * 1024 * 1024 # 500 MB
+        
+        if total_size_bytes > MAX_ZIP_SIZE:
+            return JSONResponse(status_code=400, content={
+                "error": "Folder is too large (>500MB) to ZIP. Please open the folder and download files individually."
+            })
         
         # স্মার্ট ক্যাশিং: ফাইলের লিস্ট থেকে একটি ইউনিক হ্যাশ (MD5) তৈরি করা হচ্ছে
         payload_hash = hashlib.md5(files_data.encode('utf-8')).hexdigest()
