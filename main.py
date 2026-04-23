@@ -10,6 +10,7 @@ import urllib.parse
 import json
 import shutil
 import uuid
+import hashlib
 
 # সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Android Download Manager multiple thread support)
 MAX_CONCURRENT_DOWNLOADS = 15
@@ -155,14 +156,26 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
         if not files:
             return JSONResponse(status_code=400, content={"error": "No files found to zip"})
         
-        unique_id = str(uuid.uuid4())
-        # Absolute path ব্যবহার করা হচ্ছে যেন ফাইলগুলো একদম সঠিক জায়গায় সেভ হয়
-        base_dir = os.path.abspath(UPLOAD_DIR)
-        temp_dir = os.path.join(base_dir, f"temp_folder_{unique_id}")
-        os.makedirs(temp_dir, exist_ok=True)
+        # স্মার্ট ক্যাশিং: ফাইলের লিস্ট থেকে একটি ইউনিক হ্যাশ (MD5) তৈরি করা হচ্ছে
+        payload_hash = hashlib.md5(files_data.encode('utf-8')).hexdigest()
+        unique_id = f"{folder_name}_{payload_hash}"
         
+        base_dir = os.path.abspath(UPLOAD_DIR)
         zip_filename = f"{folder_name}.zip"
         zip_filepath = os.path.join(base_dir, f"temp_zip_{unique_id}.zip")
+        
+        encoded_name = urllib.parse.quote(zip_filename)
+
+        # যদি এই ফোল্ডারের (একই ফাইলের) জিপ আগে থেকেই রেডি থাকে, তবে সার্ভার জিপ না বানিয়ে ডাইরেক্ট লিংক দিয়ে দেবে
+        if os.path.exists(zip_filepath):
+            return JSONResponse(status_code=200, content={
+                "status": "ready", 
+                "download_url": f"/download-ready-zip/{unique_id}/{encoded_name}"
+            })
+            
+        # যদি আগে থেকে রেডি না থাকে বা ফোল্ডারে নতুন ফাইল যোগ হয়, তবে নতুন করে জিপ বানাবে
+        temp_dir = os.path.join(base_dir, f"temp_folder_{unique_id}")
+        os.makedirs(temp_dir, exist_ok=True)
         
         for f in files:
             msg_id = int(f.get("message_id")) # মেসেজ আইডি নিশ্চিতভাবে ইন্টিজার করা হলো
