@@ -156,34 +156,38 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
             return JSONResponse(status_code=400, content={"error": "No files found to zip"})
         
         unique_id = str(uuid.uuid4())
-        temp_dir = os.path.join(UPLOAD_DIR, f"temp_folder_{unique_id}")
+        # Absolute path ব্যবহার করা হচ্ছে যেন ফাইলগুলো একদম সঠিক জায়গায় সেভ হয়
+        base_dir = os.path.abspath(UPLOAD_DIR)
+        temp_dir = os.path.join(base_dir, f"temp_folder_{unique_id}")
         os.makedirs(temp_dir, exist_ok=True)
         
         zip_filename = f"{folder_name}.zip"
-        zip_filepath = os.path.join(UPLOAD_DIR, f"temp_zip_{unique_id}.zip")
+        zip_filepath = os.path.join(base_dir, f"temp_zip_{unique_id}.zip")
         
         for f in files:
-            msg_id = f.get("message_id")
+            msg_id = int(f.get("message_id")) # মেসেজ আইডি নিশ্চিতভাবে ইন্টিজার করা হলো
             file_name = f.get("file_name")
             path = f.get("path", "")
             
             message = await bot.get_messages(CHANNEL_ID, msg_id)
-            if message and getattr(message, "empty", False) == False:
+            if message and not getattr(message, "empty", False):
                 save_dir = os.path.join(temp_dir, path)
                 os.makedirs(save_dir, exist_ok=True)
-                save_path = os.path.join(save_dir, file_name)
+                
+                # ফাইলের ফুল ডিরেক্টরি সেট করে ডাউনলোড করা হচ্ছে
+                save_path = os.path.abspath(os.path.join(save_dir, file_name))
                 await bot.download_media(message, file_name=save_path)
         
         # জিপ তৈরি করা
         shutil.make_archive(zip_filepath.replace('.zip', ''), 'zip', temp_dir)
         
-        # স্টোরেজ বাঁচাতে র ফাইলগুলো সাথে সাথে ডিলিট করে দেওয়া
+        # স্টোরেজ বাঁচাতে র (Raw) ফাইলগুলো সাথে সাথে ডিলিট করে দেওয়া হলো
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
             
-        # ৩০ মিনিট পর জিপ ফাইলটিও সার্ভার থেকে অটোমেটিক ডিলিট হয়ে যাবে
+        # সার্ভার চাপমুক্ত রাখতে ১০ মিনিট (৬০০ সেকেন্ড) পর জিপ ফাইলটিও অটোমেটিক ডিলিট হবে
         async def delete_later():
-            await asyncio.sleep(1800)
+            await asyncio.sleep(600)
             if os.path.exists(zip_filepath):
                 os.remove(zip_filepath)
         asyncio.create_task(delete_later())
