@@ -1,12 +1,15 @@
-from fastapi import FastAPI, UploadFile, File, Request
+from fastapi import FastAPI, UploadFile, File, Request, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from pyrogram import Client
 import os
 import traceback
 import re
 import asyncio
 import urllib.parse
+import json
+import shutil
+import uuid
 
 # সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Android Download Manager multiple thread support)
 MAX_CONCURRENT_DOWNLOADS = 15
@@ -144,6 +147,57 @@ async def download_file(message_id: int, file_name: str, request: Request):
     except Exception as e:
         print(f"Download Error: {e}")
         return JSONResponse(status_code=500, content={"error": f"Internal Server Error: {str(e)}"})
+
+@app.post("/download-zip")
+async def download_zip_folder(background_tasks: BackgroundTasks, folder_name: str = Form(...), files_data: str = Form(...)):
+    try:
+        files = json.loads(files_data)
+        if not files:
+            return JSONResponse(status_code=400, content={"error": "No files found to zip"})
+        
+        unique_id = str(uuid.uuid4())
+        temp_dir = os.path.join(UPLOAD_DIR, f"temp_folder_{unique_id}")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        zip_filename = f"{folder_name}.zip"
+        zip_filepath = os.path.join(UPLOAD_DIR, f"temp_zip_{unique_id}.zip")
+        
+        # Download all files from Telegram and maintain folder structure
+        for f in files:
+            msg_id = f.get("message_id")
+            file_name = f.get("file_name")
+            path = f.get("path", "")
+            
+            message = await bot.get_messages(CHANNEL_ID, msg_id)
+            if message and getattr(message, "empty", False) == False:
+                # Construct save directory maintaining path
+                save_dir = os.path.join(temp_dir, path)
+                os.makedirs(save_dir, exist_ok=True)
+                save_path = os.path.join(save_dir, file_name)
+                
+                await bot.download_media(message, file_name=save_path)
+        
+        # Create the ZIP archive
+        shutil.make_archive(zip_filepath.replace('.zip', ''), 'zip', temp_dir)
+        
+        # Cleanup function to delete temp files after user downloads the ZIP
+        def cleanup():
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            if os.path.exists(zip_filepath):
+                os.remove(zip_filepath)
+        
+        background_tasks.add_task(cleanup)
+        
+        # URL encode the filename for headers
+        encoded_name = urllib.parse.quote(zip_filename)
+        headers = {"Content-Disposition": f"attachment; filename*=utf-8''{encoded_name}"}
+        
+        return FileResponse(path=zip_filepath, filename=zip_filename, media_type="application/zip", headers=headers)
+        
+    except Exception as e:
+        print(f"Zip Error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.delete("/delete/{message_id}")
 async def delete_file(message_id: int):
