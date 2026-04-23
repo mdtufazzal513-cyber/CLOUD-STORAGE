@@ -148,8 +148,8 @@ async def download_file(message_id: int, file_name: str, request: Request):
         print(f"Download Error: {e}")
         return JSONResponse(status_code=500, content={"error": f"Internal Server Error: {str(e)}"})
 
-@app.post("/download-zip")
-async def download_zip_folder(background_tasks: BackgroundTasks, folder_name: str = Form(...), files_data: str = Form(...)):
+@app.post("/prepare-zip")
+async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...)):
     try:
         files = json.loads(files_data)
         if not files:
@@ -162,7 +162,6 @@ async def download_zip_folder(background_tasks: BackgroundTasks, folder_name: st
         zip_filename = f"{folder_name}.zip"
         zip_filepath = os.path.join(UPLOAD_DIR, f"temp_zip_{unique_id}.zip")
         
-        # Download all files from Telegram and maintain folder structure
         for f in files:
             msg_id = f.get("message_id")
             file_name = f.get("file_name")
@@ -170,34 +169,49 @@ async def download_zip_folder(background_tasks: BackgroundTasks, folder_name: st
             
             message = await bot.get_messages(CHANNEL_ID, msg_id)
             if message and getattr(message, "empty", False) == False:
-                # Construct save directory maintaining path
                 save_dir = os.path.join(temp_dir, path)
                 os.makedirs(save_dir, exist_ok=True)
                 save_path = os.path.join(save_dir, file_name)
-                
                 await bot.download_media(message, file_name=save_path)
         
-        # Create the ZIP archive
+        # জিপ তৈরি করা
         shutil.make_archive(zip_filepath.replace('.zip', ''), 'zip', temp_dir)
         
-        # Cleanup function to delete temp files after user downloads the ZIP
-        def cleanup():
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
+        # স্টোরেজ বাঁচাতে র ফাইলগুলো সাথে সাথে ডিলিট করে দেওয়া
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            
+        # ৩০ মিনিট পর জিপ ফাইলটিও সার্ভার থেকে অটোমেটিক ডিলিট হয়ে যাবে
+        async def delete_later():
+            await asyncio.sleep(1800)
             if os.path.exists(zip_filepath):
                 os.remove(zip_filepath)
+        asyncio.create_task(delete_later())
         
-        background_tasks.add_task(cleanup)
-        
-        # URL encode the filename for headers
         encoded_name = urllib.parse.quote(zip_filename)
-        headers = {"Content-Disposition": f"attachment; filename*=utf-8''{encoded_name}"}
-        
-        return FileResponse(path=zip_filepath, filename=zip_filename, media_type="application/zip", headers=headers)
+        return JSONResponse(status_code=200, content={
+            "status": "ready", 
+            "download_url": f"/download-ready-zip/{unique_id}/{encoded_name}"
+        })
         
     except Exception as e:
         print(f"Zip Error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/download-ready-zip/{zip_id}/{file_name:path}")
+async def download_ready_zip(zip_id: str, file_name: str):
+    zip_filepath = os.path.join(UPLOAD_DIR, f"temp_zip_{zip_id}.zip")
+    
+    if not os.path.exists(zip_filepath):
+        return JSONResponse(status_code=404, content={"error": "ZIP file expired or not found"})
+        
+    # Download Manager সাপোর্ট করার জন্য FileResponse রিটার্ন করা হচ্ছে
+    return FileResponse(
+        path=zip_filepath, 
+        filename=urllib.parse.unquote(file_name), 
+        media_type="application/zip",
+        headers={"Accept-Ranges": "bytes"}
+    )
 
 @app.delete("/delete/{message_id}")
 async def delete_file(message_id: int):
