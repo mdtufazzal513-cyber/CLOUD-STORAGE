@@ -178,7 +178,10 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
         
         # স্মার্ট ক্যাশিং: ফাইলের লিস্ট থেকে একটি ইউনিক হ্যাশ (MD5) তৈরি করা হচ্ছে
         payload_hash = hashlib.md5(files_data.encode('utf-8')).hexdigest()
-        unique_id = f"{folder_name}_{payload_hash}"
+        
+        # ফিক্স ১: ফোল্ডারের নামে স্পেস বা স্পেশাল ক্যারেক্টার থাকলে লিনাক্স ডিরেক্টরি এরর দেয়, তাই সেফ নাম তৈরি করা হলো
+        safe_folder_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', folder_name)
+        unique_id = f"{safe_folder_name}_{payload_hash}"
         
         base_dir = os.path.abspath(UPLOAD_DIR)
         zip_filename = f"{folder_name}.zip"
@@ -198,18 +201,26 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
         os.makedirs(temp_dir, exist_ok=True)
         
         for f in files:
-            msg_id = int(f.get("message_id")) # মেসেজ আইডি নিশ্চিতভাবে ইন্টিজার করা হলো
+            msg_id = int(f.get("message_id")) 
             file_name = f.get("file_name")
             path = f.get("path", "")
             
             message = await bot.get_messages(CHANNEL_ID, msg_id)
             if message and not getattr(message, "empty", False):
+                
+                # ফিক্স ২: ফাইলের নামে স্ল্যাশ (/) থাকলে সেটি ভুল ডিরেক্টরিতে চলে যাওয়ার চেষ্টা করে, তাই basename ব্যবহার করা হলো
+                safe_file_name = os.path.basename(file_name)
                 save_dir = os.path.join(temp_dir, path)
                 os.makedirs(save_dir, exist_ok=True)
                 
-                # ফাইলের ফুল ডিরেক্টরি সেট করে ডাউনলোড করা হচ্ছে
-                save_path = os.path.abspath(os.path.join(save_dir, file_name))
-                await bot.download_media(message, file_name=save_path)
+                save_path = os.path.abspath(os.path.join(save_dir, safe_file_name))
+                
+                # ফিক্স ৩: কোনো একটি ফাইল ডাউনলোড ফেইল করলে পুরো জিপ প্রসেস যেন ক্র্যাশ না করে, সেটির প্রোটেকশন
+                try:
+                    await bot.download_media(message, file_name=save_path)
+                except Exception as e:
+                    print(f"Skipping file {safe_file_name} due to error: {e}")
+                    continue
         
         # জিপ তৈরি করা
         shutil.make_archive(zip_filepath.replace('.zip', ''), 'zip', temp_dir)
