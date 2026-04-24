@@ -222,8 +222,8 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
                     print(f"Skipping file {safe_file_name} due to error: {e}")
                     continue
         
-        # জিপ তৈরি করা
-        shutil.make_archive(zip_filepath.replace('.zip', ''), 'zip', temp_dir)
+        # ফিক্স: জিপ তৈরির কাজটিকে Background Thread-এ পাঠানো হলো, যাতে সার্ভার ল্যাগ না করে এবং অন্য ইউজাররা স্মুথলি ১ জিবির মুভি ডাউনলোড/আপলোড করতে পারে।
+        await asyncio.to_thread(shutil.make_archive, zip_filepath.replace('.zip', ''), 'zip', temp_dir)
         
         # স্টোরেজ বাঁচাতে র (Raw) ফাইলগুলো সাথে সাথে ডিলিট করে দেওয়া হলো
         if os.path.exists(temp_dir):
