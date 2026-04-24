@@ -102,15 +102,17 @@ async def download_file(message_id: int, file_name: str, request: Request):
             return JSONResponse(status_code=404, content={"error": "File not found or deleted from Telegram"})
 
         media = message.document or message.video or message.photo
-        file_name = getattr(media, "file_name", f"file_{message_id}")
+        
+        # ফিক্স: ইউজার যে রিনেম করা নাম পাঠিয়েছে সেটাই যেন ইউজ হয়, টেলিগ্রামের পুরোনো নাম যেন না বসে।
+        if not file_name or file_name.strip() == "":
+            file_name = getattr(media, "file_name", f"file_{message_id}")
+            
         file_size = getattr(media, "file_size", 0)
         mime_type = getattr(media, "mime_type", "application/octet-stream")
 
-        # ফাইল জিরো বাইট হলে সার্ভার যেন ক্র্যাশ না করে
         if file_size == 0:
             return JSONResponse(status_code=400, content={"error": "File size is 0 bytes (corrupted upload)"})
 
-        # Range Header লজিক (Pause/Resume এর জন্য)
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
@@ -122,16 +124,20 @@ async def download_file(message_id: int, file_name: str, request: Request):
                 start = int(range_match.group(1))
                 end_str = range_match.group(2)
                 end = int(end_str) if end_str else file_size - 1
-                status_code = 206 # Partial Content
+                status_code = 206 
 
-        # ফাইলের নামে স্পেস, ইমোজি বা বাংলা থাকলে সার্ভার ক্র্যাশ (500 Error) করে, তাই এটি এনকোড করা হলো
+        # ফিক্স: ব্রোকেন পাইপ এরর চিরতরে দূর করার জন্য ফুল-প্রুফ স্ট্যান্ডার্ড এনকোডিং (ASCII + UTF-8)
+        safe_ascii_name = file_name.encode('ascii', 'ignore').decode('ascii').replace('"', '').replace('\n', '')
+        if not safe_ascii_name:
+            safe_ascii_name = f"file_{message_id}"
+            
         encoded_name = urllib.parse.quote(file_name)
 
         headers = {
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
-            "Content-Disposition": f"attachment; filename*=utf-8''{encoded_name}"
+            "Content-Disposition": f'attachment; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}'
         }
 
         # Pyrogram থেকে নির্দিষ্ট বাইট (offset) থেকে স্ট্রিম করা
