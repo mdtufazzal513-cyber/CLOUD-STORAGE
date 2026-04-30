@@ -11,6 +11,11 @@ import json
 import shutil
 import uuid
 import hashlib
+from pydantic import BaseModel
+from typing import List
+
+class BulkDeleteRequest(BaseModel):
+    message_ids: List[int]
 
 # সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Android Download Manager multiple thread support)
 MAX_CONCURRENT_DOWNLOADS = 15
@@ -268,3 +273,25 @@ async def delete_file(message_id: int):
         return {"status": "success"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+# --- নতুন: প্রফেশনাল Bulk Delete (Background Task) ---
+async def delete_messages_in_background(message_ids: list):
+    # টেলিগ্রাম একসাথে ১০০টি মেসেজ ডিলিট করতে দেয়, তাই ১০০ করে ভাগ (chunk) করা হলো
+    chunk_size = 100
+    for i in range(0, len(message_ids), chunk_size):
+        chunk = message_ids[i:i + chunk_size]
+        try:
+            await bot.delete_messages(chat_id=CHANNEL_ID, message_ids=chunk)
+            await asyncio.sleep(1) # ফ্লাড-ওয়েট এড়াতে ১ সেকেন্ড ডিলে
+        except Exception as e:
+            print(f"Bulk delete error: {e}")
+
+@app.post("/bulk-delete")
+async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: BackgroundTasks):
+    if not request_data.message_ids:
+        return {"status": "success", "message": "No files to delete"}
+    
+    # ব্রাউজারকে সাথে সাথে রেসপন্স দিয়ে ব্যাকগ্রাউন্ডে ডিলিট প্রসেস শুরু করা হলো
+    background_tasks.add_task(delete_messages_in_background, request_data.message_ids)
+    
+    return {"status": "success", "message": f"Started deleting {len(request_data.message_ids)} files in background"}
