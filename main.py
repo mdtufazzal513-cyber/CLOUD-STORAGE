@@ -332,29 +332,5 @@ async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: B
 async def get_admin_config():
     return {"admin_uids": config.ADMIN_UIDS}
 
-# --- Pro-Level Account Deletion API (Prevents Ghost Accounts & Saves DB Read/Writes) ---
-class DeleteAccountRequest(BaseModel):
-    uid: str
-    message_ids: List[int]
-
-@app.post("/delete-account")
-async def delete_account_api(req: DeleteAccountRequest, background_tasks: BackgroundTasks):
-    try:
-        # 1. Background Task: Telegram থেকে ফাইল ডিলিট করা
-        if req.message_ids:
-            background_tasks.add_task(delete_messages_in_background, req.message_ids)
-            
-        # 2. Server-side DB Wipe: Firebase ডাটাবেস থেকে ইউজারের পুরো হিস্ট্রি ডিলিট করা
-        # সার্ভার থেকে ডিলিট করার কারণে ক্লায়েন্ট সাইডের onDisconnect ট্র্যাকার ট্রিগার হবে না।
-        fb_db.reference(f"users/{req.uid}").delete()
-        
-        # 3. Server-side Auth Wipe: Firebase Auth থেকে ইউজারকে ডিলিট করা
-        try:
-            fb_auth.delete_user(req.uid)
-        except Exception as e:
-            print(f"Auth User already deleted or error: {e}")
-            
-        return {"status": "success", "message": "Account wiped cleanly from server"}
-    except Exception as e:
-        print(f"Server Deletion Error: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+# Server-side Delete API has been removed. 
+# Deletion is now handled directly via Client-side Firebase SDK to prevent server errors.
