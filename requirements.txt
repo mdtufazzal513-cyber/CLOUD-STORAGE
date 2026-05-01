@@ -3,3 +3,4 @@ uvicorn
 pyrogram
 TgCrypto
 python-multipart
+firebase-admin
