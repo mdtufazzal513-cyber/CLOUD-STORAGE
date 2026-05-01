@@ -34,11 +34,13 @@ app.add_middleware(
     max_age=3600 # ব্রাউজার ১ ঘণ্টার জন্য সিকিউরিটি চেক ক্যাশ করে রাখবে (স্পিড বুস্ট)
 )
 
-# Render-এর Environment Variable
-API_ID = int(os.getenv("API_ID", "33445387"))
-API_HASH = os.getenv("API_HASH", "5b1badf6d0f44c940a2263cef28d6689").strip()
-SESSION_STRING = os.getenv("SESSION_STRING", "BQH-VgsAjXAtpA7_8WzYjaImZMmoFJUd6RFEut4X32b15iWR-62IjLNTLZQt1xYigp13Sm6rcUVvXEuUdpoJDhwkaSTOCcT2CWGtRPslhvdY7JueDWhne_rJtCSqoV0AcADg21xCGuDNjLl4LaIry4VQerxgYEOmD93djo0MPUZRxoHuEAcNxTrCxr_IqC6fzEsMxB5Mqk1nnNM_-ZBsNKSzfvCiCljgVktNXXilhmchvLTFXs2EvYSHewxyJRuTK-NAVupaUKywQE1hVNWKMmJNKdIbXdPzGFbITV4wdY54ezBTsd1pP-NfLGb_VJYUkaQmeEy5EP49-Ak8gSkZL4AbrMqFKAAAAAIE58I1AA").strip()
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1003984468691"))
+# Central Config File (generate_session.py) থেকে ডাটা ইম্পোর্ট করা হচ্ছে
+import generate_session as config
+
+API_ID = config.API_ID
+API_HASH = config.API_HASH
+SESSION_STRING = config.SESSION_STRING
+CHANNEL_ID = config.CHANNEL_ID
 
 # Pyrogram Client Setup
 bot = Client("my_user", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING, in_memory=True)
@@ -295,3 +297,7 @@ async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: B
     background_tasks.add_task(delete_messages_in_background, request_data.message_ids)
     
     return {"status": "success", "message": f"Started deleting {len(request_data.message_ids)} files in background"}
+# --- Admin Panel এর জন্য Central Verification API ---
+@app.get("/get-admin-config")
+async def get_admin_config():
+    return {"admin_uids": config.ADMIN_UIDS}
