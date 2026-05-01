@@ -16,22 +16,31 @@ from typing import List
 import firebase_admin
 from firebase_admin import credentials, auth as fb_auth, db as fb_db
 
-# --- Firebase Admin SDK Setup (Pro Level & Auto-Fixing) ---
+# --- Firebase Admin SDK Setup (Ultra Pro Level & Auto-Fixing) ---
 try:
     import json
-    with open("firebase-adminsdk.json", "r") as f:
+    import textwrap
+
+    with open("firebase-adminsdk.json", "r", encoding="utf-8") as f:
         cert_dict = json.load(f)
     
-    # 🚨 MAGIC FIX FOR 'Invalid JWT Signature' ERROR 🚨
-    # কপি-পেস্ট করার সময় private_key এর ভেতরের \n গুলো যদি নষ্ট হয়ে যায়, পাইথন অটোমেটিক সেটা ঠিক করে নেবে।
-    if "\\n" in cert_dict["private_key"]:
-        cert_dict["private_key"] = cert_dict["private_key"].replace("\\n", "\n")
+    # 🚨 ULTIMATE PRIVATE KEY FIXER 🚨
+    # কপি-পেস্ট বা অপারেটিং সিস্টেমের কারণে Key-এর ভেতরের স্পেস বা লাইন ব্রেক নষ্ট হলে এটি নিজে থেকে ফিক্স করে নেবে!
+    raw_key = cert_dict.get("private_key", "")
+    
+    # সব ধরণের লাইন ব্রেক ও স্পেস রিমুভ করে একদম ক্লিন করা হচ্ছে
+    clean_key = raw_key.replace("-----BEGIN PRIVATE KEY-----", "").replace("-----END PRIVATE KEY-----", "")
+    clean_key = clean_key.replace("\\n", "").replace("\n", "").replace("\r", "").replace(" ", "")
+    
+    # স্ট্যান্ডার্ড PEM ফরম্যাটে (৬৪ ক্যারেক্টার পর পর লাইন ব্রেক) নতুন করে সাজানো হচ্ছে
+    formatted_key = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(clean_key, 64)) + "\n-----END PRIVATE KEY-----\n"
+    cert_dict["private_key"] = formatted_key
 
     cred = credentials.Certificate(cert_dict)
     firebase_admin.initialize_app(cred, {
         'databaseURL': 'https://file-to-stream-default-rtdb.asia-southeast1.firebasedatabase.app'
     })
-    print("✅ Firebase Admin SDK Initialized Successfully!")
+    print("✅ Firebase Admin SDK Initialized Perfectly!")
 except Exception as e:
     print(f"❌ Failed to initialize Firebase Admin SDK: {e}")
 
