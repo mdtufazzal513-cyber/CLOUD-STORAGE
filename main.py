@@ -16,11 +16,24 @@ from typing import List
 import firebase_admin
 from firebase_admin import credentials, auth as fb_auth, db as fb_db
 
-# --- Firebase Admin SDK Setup (Pro Level) ---
-cred = credentials.Certificate("firebase-adminsdk.json")
-firebase_admin.initialize_app(cred, {
-    'databaseURL': 'https://file-to-stream-default-rtdb.asia-southeast1.firebasedatabase.app'
-})
+# --- Firebase Admin SDK Setup (Pro Level & Auto-Fixing) ---
+try:
+    import json
+    with open("firebase-adminsdk.json", "r") as f:
+        cert_dict = json.load(f)
+    
+    # 🚨 MAGIC FIX FOR 'Invalid JWT Signature' ERROR 🚨
+    # কপি-পেস্ট করার সময় private_key এর ভেতরের \n গুলো যদি নষ্ট হয়ে যায়, পাইথন অটোমেটিক সেটা ঠিক করে নেবে।
+    if "\\n" in cert_dict["private_key"]:
+        cert_dict["private_key"] = cert_dict["private_key"].replace("\\n", "\n")
+
+    cred = credentials.Certificate(cert_dict)
+    firebase_admin.initialize_app(cred, {
+        'databaseURL': 'https://file-to-stream-default-rtdb.asia-southeast1.firebasedatabase.app'
+    })
+    print("✅ Firebase Admin SDK Initialized Successfully!")
+except Exception as e:
+    print(f"❌ Failed to initialize Firebase Admin SDK: {e}")
 
 class BulkDeleteRequest(BaseModel):
     message_ids: List[int]
