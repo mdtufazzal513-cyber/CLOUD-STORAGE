@@ -103,6 +103,15 @@ async def ping_server():
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...)):
     try:
+        # 🚨 Server-Side File Size Protection: Firebase থেকে ম্যাক্স লিমিট চেক করা হচ্ছে
+        try:
+            max_size_ref = fb_db.reference('system_settings/max_file_size')
+            MAX_ALLOWED_SIZE = max_size_ref.get()
+            if not MAX_ALLOWED_SIZE:
+                MAX_ALLOWED_SIZE = 500 * 1024 * 1024 # Default 500 MB
+        except Exception:
+            MAX_ALLOWED_SIZE = 500 * 1024 * 1024
+
         safe_filename = file.filename.replace(" ", "_")
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
         file_size = 0
@@ -113,8 +122,18 @@ async def upload_file(file: UploadFile = File(...)):
                 chunk = await file.read(1024 * 1024) # 1 MB chunk
                 if not chunk:
                     break
+                
                 buffer.write(chunk)
                 file_size += len(chunk)
+                
+                # 🚨 File Size Exploit Protection: স্ট্রিম চলাকালীন সাইজ লিমিট ক্রস করলে ক্যানসেল
+                if file_size > MAX_ALLOWED_SIZE:
+                    buffer.close()
+                    os.remove(file_path)
+                    return JSONResponse(status_code=400, content={
+                        "status": "error", 
+                        "message": f"Upload aborted! File exceeds the maximum limit of {MAX_ALLOWED_SIZE / (1024*1024):.2f} MB."
+                    })
 
         # Pyrogram ফাইলটিকে টেলিগ্রামে আপলোড করবে (এটি ডিফল্টভাবেই স্মার্ট স্ট্রিমিং ব্যবহার করে)
         sent_message = await bot.send_document(chat_id=CHANNEL_ID, document=file_path)
