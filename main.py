@@ -103,6 +103,16 @@ async def ping_server():
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...)):
     try:
+        # 🚨 Maintenance Mode Protection: সার্ভার লক থাকলে আপলোড ব্লক করা হবে
+        try:
+            maintenance_ref = fb_db.reference('system_settings/maintenance_mode')
+            m_data = maintenance_ref.get()
+            if m_data and isinstance(m_data, dict):
+                if m_data.get('status') == 'active':
+                    return JSONResponse(status_code=403, content={"status": "error", "message": "Server is in maintenance mode!"})
+        except Exception as e:
+            print("Maintenance check error:", e)
+
         # 🚨 Server-Side File Size Protection: Firebase থেকে ম্যাক্স লিমিট চেক করা হচ্ছে
         try:
             max_size_ref = fb_db.reference('system_settings/max_file_size')
@@ -339,6 +349,16 @@ async def delete_messages_in_background(message_ids: list):
 
 @app.post("/bulk-delete")
 async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: BackgroundTasks):
+    # 🚨 Maintenance Mode Protection
+    try:
+        maintenance_ref = fb_db.reference('system_settings/maintenance_mode')
+        m_data = maintenance_ref.get()
+        if m_data and isinstance(m_data, dict):
+            if m_data.get('status') == 'active':
+                return JSONResponse(status_code=403, content={"status": "error", "message": "Server is under maintenance!"})
+    except Exception as e:
+        pass
+
     if not request_data.message_ids:
         return {"status": "success", "message": "No files to delete"}
     
