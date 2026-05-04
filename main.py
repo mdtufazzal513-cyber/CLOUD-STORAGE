@@ -65,13 +65,17 @@ app.add_middleware(
     max_age=3600 # ব্রাউজার ১ ঘণ্টার জন্য সিকিউরিটি চেক ক্যাশ করে রাখবে (স্পিড বুস্ট)
 )
 
-# Central Config File (generate_session.py) থেকে ডাটা ইম্পোর্ট করা হচ্ছে
-import generate_session as config
+# --- Environment Variables (.env) থেকে ডাটা ইম্পোর্ট করা হচ্ছে ---
+from dotenv import load_dotenv
+import os
 
-API_ID = config.API_ID
-API_HASH = config.API_HASH
-SESSION_STRING = config.SESSION_STRING
-CHANNEL_ID = config.CHANNEL_ID
+load_dotenv() # লোকাল পিসির জন্য .env লোড করবে, Render-এ এটি স্বয়ংক্রিয়ভাবে ইগনোর হবে
+
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+SESSION_STRING = os.environ.get("SESSION_STRING", "")
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
+ADMIN_UIDS = os.environ.get("ADMIN_UIDS", "")
 
 # Pyrogram Client Setup
 bot = Client("my_user", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING, in_memory=True)
@@ -151,7 +155,7 @@ async def startup():
     
     # 🚨 অটোমেটিক ফায়ারবেস ডেটাবেসে অ্যাডমিন যুক্ত করার যাদু! (মোবাইল দিয়ে আর কষ্ট করতে হবে না)
     try:
-        admin_uids_str = getattr(config, "ADMIN_UIDS", "")
+        admin_uids_str = ADMIN_UIDS
         if admin_uids_str:
             admin_list = [uid.strip() for uid in admin_uids_str.split(",")]
             admin_updates = {uid: True for uid in admin_list if uid}
@@ -207,7 +211,8 @@ async def upload_file(file: UploadFile = File(...)):
         except Exception:
             MAX_ALLOWED_SIZE = 500 * 1024 * 1024
 
-        safe_filename = file.filename.replace(" ", "_")
+        # 🚨 UUID যুক্ত করা হলো যাতে একই নামের ফাইলে ওভাররাইট না হয়
+        safe_filename = f"{uuid.uuid4().hex}_{file.filename.replace(' ', '_')}"
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
         file_size = 0
         
@@ -459,17 +464,7 @@ async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: B
 # --- Admin Panel এর জন্য Central Verification API ---
 @app.get("/get-admin-config")
 async def get_admin_config():
-    # 🚨 Auto-Fix: অ্যাডমিন প্যানেল ওপেন করলেই ব্যাকএন্ড নিশ্চিত করবে যেন আপনি ফায়ারবেসে অ্যাডমিন পাওয়ার পান!
-    try:
-        admin_uids_str = getattr(config, "ADMIN_UIDS", "")
-        if admin_uids_str:
-            admin_list = [uid.strip() for uid in admin_uids_str.split(",") if uid.strip()]
-            for uid in admin_list:
-                fb_db.reference(f'admins/{uid}').set(True)
-    except Exception as e:
-        print(f"Admin Sync Error: {e}")
-        
-    return {"admin_uids": config.ADMIN_UIDS}
+    return {"admin_uids": ADMIN_UIDS}
 
 # Server-side Delete API has been removed. 
 # Deletion is now handled directly via Client-side Firebase SDK to prevent server errors.
