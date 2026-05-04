@@ -1,4 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, Request, Form, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Request, Form, BackgroundTasks, Depends, HTTPException, Security, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from pyrogram import Client
@@ -53,6 +54,21 @@ MAX_CONCURRENT_DOWNLOADS = 15
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
+
+# --- Firebase Token Verification Security ---
+security = HTTPBearer()
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+    try:
+        # ফায়ারবেস থেকে টোকেন চেক করে ইউজারের ভ্যালিডিটি নিশ্চিত করা হচ্ছে
+        decoded_token = fb_auth.verify_id_token(credentials.credentials)
+        return decoded_token
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or Expired Firebase Token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 # --- CORS পলিসি সেটআপ (খুবই গুরুত্বপূর্ণ) ---
 app.add_middleware(
@@ -190,7 +206,7 @@ async def ping_server():
     return {"status": "awake"}
 
 @app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(verify_token)):
     try:
         # 🚨 Maintenance Mode Protection: সার্ভার লক থাকলে আপলোড ব্লক করা হবে
         try:
@@ -322,7 +338,7 @@ async def download_file(message_id: int, file_name: str, request: Request):
         return JSONResponse(status_code=500, content={"error": f"Internal Server Error: {str(e)}"})
 
 @app.post("/prepare-zip")
-async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...)):
+async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
     try:
         files = json.loads(files_data)
         if not files:
@@ -423,7 +439,7 @@ async def download_ready_zip(zip_id: str, file_name: str):
     )
 
 @app.delete("/delete/{message_id}")
-async def delete_file(message_id: int):
+async def delete_file(message_id: int, user_token: dict = Depends(verify_token)):
     try:
         await bot.delete_messages(chat_id=CHANNEL_ID, message_ids=message_id)
         return {"status": "success"}
@@ -443,7 +459,7 @@ async def delete_messages_in_background(message_ids: list):
             print(f"Bulk delete error: {e}")
 
 @app.post("/bulk-delete")
-async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: BackgroundTasks):
+async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: BackgroundTasks, user_token: dict = Depends(verify_token)):
     # 🚨 Maintenance Mode Protection
     try:
         maintenance_ref = fb_db.reference('system_settings/maintenance_mode')
