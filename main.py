@@ -11,6 +11,7 @@ import json
 import shutil
 import uuid
 import hashlib
+import time
 from pydantic import BaseModel
 from typing import List
 import firebase_admin
@@ -77,8 +78,89 @@ bot = Client("my_user", api_id=API_ID, api_hash=API_HASH, session_string=SESSION
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# --- Auto-Trash Cleaner (Background Job) ---
+async def auto_trash_cleaner():
+    TRASH_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000 # 30 Days in MS
+    await asyncio.sleep(60) # সার্ভার স্টার্ট হওয়ার ৬০ সেকেন্ড পর প্রথমবার রান করবে
+    while True:
+        try:
+            print("🧹 Running Auto-Trash Background Cleaner...")
+            users_ref = fb_db.reference('users')
+            users = users_ref.get()
+            if users:
+                now_ms = int(time.time() * 1000)
+                for uid, user_data in users.items():
+                    updates = {}
+                    message_ids_to_delete = []
+
+                    # চেক ফোল্ডারস
+                    folders = user_data.get('folders', {})
+                    for f_key, f_data in folders.items():
+                        if f_data.get('is_trashed'):
+                            trashed_at = f_data.get('trashed_at', 0)
+                            if (now_ms - trashed_at) > TRASH_EXPIRY_MS:
+                                updates[f'users/{uid}/folders/{f_key}'] = None
+
+                    # চেক ফাইলস
+                    files = user_data.get('files', {})
+                    for f_key, f_data in files.items():
+                        if f_data.get('is_trashed'):
+                            trashed_at = f_data.get('trashed_at', 0)
+                            if (now_ms - trashed_at) > TRASH_EXPIRY_MS:
+                                updates[f'users/{uid}/files/{f_key}'] = None
+                                if f_data.get('message_id'):
+                                    message_ids_to_delete.append(int(f_data['message_id']))
+
+                    # একসাথে টেলিগ্রাম থেকে ডিলিট করা
+                    if message_ids_to_delete:
+                        for i in range(0, len(message_ids_to_delete), 100):
+                            chunk = message_ids_to_delete[i:i + 100]
+                            try:
+                                await bot.delete_messages(chat_id=CHANNEL_ID, message_ids=chunk)
+                                await asyncio.sleep(1)
+                            except Exception as e:
+                                pass
+
+                    # ফায়ারবেস থেকে মুছে ফেলা
+                    if updates:
+                        fb_db.reference().update(updates)
+                        print(f"✅ Cleared expired trash for user: {uid}")
+                        
+        except Exception as e:
+            print(f"❌ Auto-Trash Error: {e}")
+        
+        # প্রতি ১২ ঘণ্টা পর পর চেক করবে (সার্ভার রিলাক্স থাকবে)
+        await asyncio.sleep(12 * 60 * 60)
+
+# সার্ভার চালুর সময় আগের টেম্পোরারি ফাইলগুলো মুছে সার্ভার ক্লিন করা হচ্ছে (Storage Leak Fix)
+def cleanup_temp_folder():
+    try:
+        for filename in os.listdir(UPLOAD_DIR):
+            file_path = os.path.join(UPLOAD_DIR, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        print("🧹 Temp folder cleaned up successfully on startup!")
+    except Exception as e:
+        print(f"Error cleaning temp folder: {e}")
+
 @app.on_event("startup")
 async def startup():
+    cleanup_temp_folder() # ক্লিনআপ ফাংশন কল
+    
+    # 🚨 অটোমেটিক ফায়ারবেস ডেটাবেসে অ্যাডমিন যুক্ত করার যাদু! (মোবাইল দিয়ে আর কষ্ট করতে হবে না)
+    try:
+        admin_uids_str = getattr(config, "ADMIN_UIDS", "")
+        if admin_uids_str:
+            admin_list = [uid.strip() for uid in admin_uids_str.split(",")]
+            admin_updates = {uid: True for uid in admin_list if uid}
+            # Firebase Admin SDK সব রুলস বাইপাস করে অটোমেটিক আপনাকে ডেটাবেসে অ্যাডমিন বানিয়ে দেবে
+            fb_db.reference('admins').set(admin_updates)
+            print("👑 Admin UIDs automatically synced to Firebase Database!")
+    except Exception as e:
+        print(f"Error syncing admins: {e}")
+
     print("--- Starting Telegram Session... ---")
     await bot.start()
     try:
@@ -87,6 +169,9 @@ async def startup():
         print("--- Dialogs Loaded Successfully! ---")
     except Exception as e:
         print("Error loading dialogs:", e)
+    
+    # ব্যাকগ্রাউন্ডে Auto-Trash Job চালু করা হলো
+    asyncio.create_task(auto_trash_cleaner())
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -147,15 +232,20 @@ async def upload_file(file: UploadFile = File(...)):
 
         # Pyrogram ফাইলটিকে টেলিগ্রামে আপলোড করবে (এটি ডিফল্টভাবেই স্মার্ট স্ট্রিমিং ব্যবহার করে)
         sent_message = await bot.send_document(chat_id=CHANNEL_ID, document=file_path)
-        
-        if os.path.exists(file_path):
-            os.remove(file_path)
 
         return {"status": "success", "file_name": file.filename, "file_size": file_size, "message_id": sent_message.id}
 
     except Exception as e:
-        print(f"!!! UPLOAD ERROR: {e} !!!")
+        print(f"!!! UPLOAD ERROR/CANCELED: {e} !!!")
         return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+        
+    finally:
+        # 🚨 Memory Leak Protection: আপলোড সাকসেস হোক বা ক্যানসেল হোক, সার্ভারের ডিস্ক ক্লিন করে দেওয়া হবে
+        if 'file_path' in locals() and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Cleanup error: {e}")
 
 # --- Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}/{file_name:path}")
