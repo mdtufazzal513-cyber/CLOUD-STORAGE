@@ -459,6 +459,16 @@ async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: B
 # --- Admin Panel এর জন্য Central Verification API ---
 @app.get("/get-admin-config")
 async def get_admin_config():
+    # 🚨 Auto-Fix: অ্যাডমিন প্যানেল ওপেন করলেই ব্যাকএন্ড নিশ্চিত করবে যেন আপনি ফায়ারবেসে অ্যাডমিন পাওয়ার পান!
+    try:
+        admin_uids_str = getattr(config, "ADMIN_UIDS", "")
+        if admin_uids_str:
+            admin_list = [uid.strip() for uid in admin_uids_str.split(",") if uid.strip()]
+            for uid in admin_list:
+                fb_db.reference(f'admins/{uid}').set(True)
+    except Exception as e:
+        print(f"Admin Sync Error: {e}")
+        
     return {"admin_uids": config.ADMIN_UIDS}
 
 # Server-side Delete API has been removed. 
