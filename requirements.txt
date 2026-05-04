@@ -4,3 +4,4 @@ pyrogram
 TgCrypto
 python-multipart
 firebase-admin
+python-dotenv
