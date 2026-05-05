@@ -150,13 +150,14 @@ class TelegramCluster:
                     bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
                     await bot_client.start()
                     
-                    # 🚨 PEER ID FIX: Pyrogram-এর মেমোরি ক্যাশ (Access Hash) রিফ্রেশ করা হচ্ছে
-                    try:
-                        # বট যেসব চ্যানেলে এডমিন আছে, সবগুলোর ডেটা ফোর্স করে মেমোরিতে লোড করবে
-                        async for dialog in bot_client.get_dialogs():
-                            pass
-                    except Exception as ce:
-                        print(f"⚠️ Dialog Cache Error: {ce}")
+                    # 🚨 PEER ID FIX: বট যেসব চ্যানেলে এডমিন, সেগুলো মেমোরিতে ক্যাশ করা হচ্ছে
+                    all_channels = [self.primary_channel] + self.backup_channels
+                    for ch_id in all_channels:
+                        try:
+                            # get_chat() কল করলে বট চ্যানেলটির ডেটা টেলিগ্রাম থেকে ফেচ করে মেমোরিতে সেভ করে নেবে
+                            await bot_client.get_chat(ch_id)
+                        except Exception as ce:
+                            print(f"⚠️ Warning: Bot {idx} cannot cache channel {ch_id}. Error: {ce}")
                     
                     self.clients.append(bot_client)
 
