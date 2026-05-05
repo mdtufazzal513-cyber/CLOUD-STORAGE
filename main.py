@@ -147,7 +147,10 @@ class TelegramCluster:
                     else:
                         b_api_id, b_api_hash, token = global_api_id, global_api_hash, parts[0].strip()
                         
-                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
+                    # 🚨 MAJOR FIX: in_memory=True বাদ দিয়ে Physical Session ফাইল ব্যবহার করা হচ্ছে।
+                    # এতে বট একবার চ্যানেল চিনতে পারলে আর কখনোই Peer ID Invalid বলবে না।
+                    session_name = f"bot_session_{idx}"
+                    bot_client = Client(session_name, api_id=b_api_id, api_hash=b_api_hash, bot_token=token)
                     await bot_client.start()
                     
                     # 🚨 ULTIMATE PEER ID FIX (HTTP Force Sync)
