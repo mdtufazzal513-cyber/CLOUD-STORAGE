@@ -151,6 +151,15 @@ class TelegramCluster:
                     await bot_client.start()
                     
                     self.clients.append(bot_client)
+                    
+                    # 🚨 FIX: Peer ID Invalid Error - Caching Channels on Startup
+                    all_channels = [self.primary_channel] + self.backup_channels
+                    for ch_id in all_channels:
+                        try:
+                            await bot_client.get_chat(ch_id)
+                        except Exception as ce:
+                            print(f"⚠️ Warning: Bot {idx} cannot access channel {ch_id}. Is it an Admin? Error: {ce}")
+
                     if idx == 0:
                         print("✅ Main Bot (Traffic Loader) logged in successfully!")
                     else:
@@ -272,7 +281,7 @@ async def shutdown():
         try: await client.stop()
         except: pass
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {"status": "Cloud Storage API is Running successfully!"}
 
@@ -641,3 +650,9 @@ async def reload_telegram_cluster(user_token: dict = Depends(verify_token)):
 
 # Server-side Delete API has been removed. 
 # Deletion is now handled directly via Client-side Firebase SDK to prevent server errors.
+
+# 🚨 FIX: Render Port Binding Issue
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
