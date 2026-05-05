@@ -136,7 +136,7 @@ class TelegramCluster:
                 except: pass
             self.clients.clear()
 
-            # ১. Dummy Bots দিয়ে ক্লায়েন্ট স্টার্ট করা (লুপের মাধ্যমে)
+            # ১. Bots দিয়ে ক্লায়েন্ট স্টার্ট করা (লুপের মাধ্যমে)
             for idx, b_data in enumerate(raw_bots):
                 try:
                     parts = b_data.split('|')
@@ -145,16 +145,16 @@ class TelegramCluster:
                     else:
                         b_api_id, b_api_hash, token = global_api_id, global_api_hash, parts[0].strip()
                         
-                    bot_client = Client(f"dummy_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
+                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
                     await bot_client.start()
                     
-                    print(f"🔄 Scanning chats for Dummy Bot {idx + 1} to fix Peer ID...")
-                    async for _ in bot_client.get_dialogs(limit=50): pass
-                    
                     self.clients.append(bot_client)
-                    print(f"✅ Dummy Bot {idx + 1} logged in successfully!")
+                    if idx == 0:
+                        print("✅ Main Bot (Traffic Loader) logged in successfully!")
+                    else:
+                        print(f"✅ Backup Bot {idx} logged in successfully!")
                 except Exception as e:
-                    print(f"❌ Failed to start Dummy Bot {idx + 1}: {e}")
+                    print(f"❌ Failed to start Bot {idx}: {e}")
             
             self.is_ready = True
             print(f"✅ Telegram Cluster Ready: {len(self.clients)} Active Accounts/Bots, 1 Primary Channel, {len(self.backup_channels)} Backups.")
