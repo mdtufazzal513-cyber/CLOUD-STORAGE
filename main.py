@@ -46,8 +46,9 @@ try:
 except Exception as e:
     print(f"❌ Failed to initialize Firebase Admin SDK: {e}")
 
+from typing import List, Any
 class BulkDeleteRequest(BaseModel):
-    message_ids: List[int]
+    message_ids: List[Any]
 
 # সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Android Download Manager multiple thread support)
 MAX_CONCURRENT_DOWNLOADS = 15
@@ -85,18 +86,82 @@ app.add_middleware(
 from dotenv import load_dotenv
 import os
 
-load_dotenv() # লোকাল পিসির জন্য .env লোড করবে, Render-এ এটি স্বয়ংক্রিয়ভাবে ইগনোর হবে
+load_dotenv() # লোকাল পিসির জন্য .env লোড করবে
 
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-SESSION_STRING = os.environ.get("SESSION_STRING", "")
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
+# Bootstrapping Variables (Fallback)
+ENV_API_ID = int(os.environ.get("API_ID", 0))
+ENV_API_HASH = os.environ.get("API_HASH", "")
+ENV_SESSION_STRING = os.environ.get("SESSION_STRING", "")
+ENV_CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
 ADMIN_UIDS = os.environ.get("ADMIN_UIDS", "")
 
-# Pyrogram Client Setup
-bot = Client("my_user", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING, in_memory=True)
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# 🚨 Server RAM Protection (Active Task Counter)
+active_tasks = 0
+MAX_ACTIVE_TASKS = 6 # ফ্রি সার্ভারের জন্য একসাথে ৬টি রিকোয়েস্ট নিরাপদ
+
+# --- 🚀 Smart Telegram Cluster Manager ---
+class TelegramCluster:
+    def __init__(self):
+        self.clients = []
+        self.primary_channel = 0
+        self.backup_channels = []
+        self.current_client_index = 0
+        self.is_ready = False
+
+    async def reload_config(self):
+        try:
+            config_ref = fb_db.reference('system_settings/telegram_config').get()
+            
+            api_id = int(config_ref.get('api_id', ENV_API_ID)) if config_ref else ENV_API_ID
+            api_hash = config_ref.get('api_hash', ENV_API_HASH) if config_ref else ENV_API_HASH
+            
+            sessions_str = config_ref.get('sessions', ENV_SESSION_STRING) if config_ref else ENV_SESSION_STRING
+            sessions = [s.strip() for s in sessions_str.split(',') if s.strip()]
+            
+            channels_str = config_ref.get('channels', str(ENV_CHANNEL_ID)) if config_ref else str(ENV_CHANNEL_ID)
+            channels = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
+
+            if not sessions or not channels:
+                print("⚠️ Telegram Config Missing!")
+                return
+
+            self.primary_channel = channels[0]
+            self.backup_channels = channels[1:]
+
+            for client in self.clients:
+                try: await client.stop()
+                except: pass
+            self.clients.clear()
+
+            for idx, session in enumerate(sessions):
+                client = Client(f"session_{idx}", api_id=api_id, api_hash=api_hash, session_string=session, in_memory=True)
+                await client.start()
+                self.clients.append(client)
+            
+            self.is_ready = True
+            print(f"✅ Telegram Cluster Ready: {len(self.clients)} Sessions, 1 Primary, {len(self.backup_channels)} Backups.")
+        except Exception as e:
+            print(f"❌ Cluster Boot Error: {e}")
+
+    def get_next_client(self):
+        if not self.clients: return None
+        client = self.clients[self.current_client_index]
+        self.current_client_index = (self.current_client_index + 1) % len(self.clients)
+        return client
+
+tg_cluster = TelegramCluster()
+
+class BotProxy:
+    def __getattr__(self, item):
+        client = tg_cluster.get_next_client()
+        if not client: raise Exception("No clients available")
+        return getattr(client, item)
+
+bot = BotProxy()
+CHANNEL_ID = 0 # To be overridden dynamically in code
 
 # --- Auto-Trash Cleaner (Background Job) ---
 async def auto_trash_cleaner():
@@ -167,35 +232,28 @@ def cleanup_temp_folder():
 
 @app.on_event("startup")
 async def startup():
-    cleanup_temp_folder() # ক্লিনআপ ফাংশন কল
+    cleanup_temp_folder() 
     
-    # 🚨 অটোমেটিক ফায়ারবেস ডেটাবেসে অ্যাডমিন যুক্ত করার যাদু! (মোবাইল দিয়ে আর কষ্ট করতে হবে না)
     try:
         admin_uids_str = ADMIN_UIDS
         if admin_uids_str:
             admin_list = [uid.strip() for uid in admin_uids_str.split(",")]
             admin_updates = {uid: True for uid in admin_list if uid}
-            # Firebase Admin SDK সব রুলস বাইপাস করে অটোমেটিক আপনাকে ডেটাবেসে অ্যাডমিন বানিয়ে দেবে
             fb_db.reference('admins').set(admin_updates)
             print("👑 Admin UIDs automatically synced to Firebase Database!")
     except Exception as e:
         print(f"Error syncing admins: {e}")
 
-    print("--- Starting Telegram Session... ---")
-    await bot.start()
-    try:
-        async for dialog in bot.get_dialogs(limit=100):
-            pass
-        print("--- Dialogs Loaded Successfully! ---")
-    except Exception as e:
-        print("Error loading dialogs:", e)
+    print("--- Starting Telegram Cluster... ---")
+    await tg_cluster.reload_config()
     
-    # ব্যাকগ্রাউন্ডে Auto-Trash Job চালু করা হলো
     asyncio.create_task(auto_trash_cleaner())
 
 @app.on_event("shutdown")
 async def shutdown():
-    await bot.stop()
+    for client in tg_cluster.clients:
+        try: await client.stop()
+        except: pass
 
 @app.get("/")
 async def root():
@@ -207,94 +265,119 @@ async def ping_server():
 
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(verify_token)):
+    global active_tasks
+    if active_tasks >= MAX_ACTIVE_TASKS:
+        return JSONResponse(status_code=503, content={"status": "error", "message": "Server is under heavy load. Please wait a moment and try again."})
+    
+    active_tasks += 1
     try:
-        # 🚨 Maintenance Mode Protection: সার্ভার লক থাকলে আপলোড ব্লক করা হবে
+        if not tg_cluster.is_ready:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "Cluster not ready yet!"})
+
         try:
             maintenance_ref = fb_db.reference('system_settings/maintenance_mode')
             m_data = maintenance_ref.get()
             if m_data and isinstance(m_data, dict):
                 if m_data.get('status') == 'active':
                     return JSONResponse(status_code=403, content={"status": "error", "message": "Server is in maintenance mode!"})
-        except Exception as e:
-            print("Maintenance check error:", e)
+        except Exception: pass
 
-        # 🚨 Server-Side File Size Protection: Firebase থেকে ম্যাক্স লিমিট চেক করা হচ্ছে
         try:
             max_size_ref = fb_db.reference('system_settings/max_file_size')
             MAX_ALLOWED_SIZE = max_size_ref.get()
-            if not MAX_ALLOWED_SIZE:
-                MAX_ALLOWED_SIZE = 500 * 1024 * 1024 # Default 500 MB
-        except Exception:
-            MAX_ALLOWED_SIZE = 500 * 1024 * 1024
+            if not MAX_ALLOWED_SIZE: MAX_ALLOWED_SIZE = 500 * 1024 * 1024
+        except Exception: MAX_ALLOWED_SIZE = 500 * 1024 * 1024
 
-        # 🚨 UUID যুক্ত করা হলো যাতে একই নামের ফাইলে ওভাররাইট না হয়
         safe_filename = f"{uuid.uuid4().hex}_{file.filename.replace(' ', '_')}"
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
         file_size = 0
         
-        # Free Server Protection: RAM বাঁচানোর জন্য ফাইলটি 1MB করে ছোট ছোট খণ্ডে (Chunk) সেভ করা হচ্ছে
         with open(file_path, "wb") as buffer:
             while True:
-                chunk = await file.read(1024 * 1024) # 1 MB chunk
-                if not chunk:
-                    break
-                
+                chunk = await file.read(1024 * 1024) 
+                if not chunk: break
                 buffer.write(chunk)
                 file_size += len(chunk)
-                
-                # 🚨 File Size Exploit Protection: স্ট্রিম চলাকালীন সাইজ লিমিট ক্রস করলে ক্যানসেল
                 if file_size > MAX_ALLOWED_SIZE:
                     buffer.close()
                     os.remove(file_path)
-                    return JSONResponse(status_code=400, content={
-                        "status": "error", 
-                        "message": f"Upload aborted! File exceeds the maximum limit of {MAX_ALLOWED_SIZE / (1024*1024):.2f} MB."
-                    })
+                    return JSONResponse(status_code=400, content={"status": "error", "message": f"Upload aborted! Exceeds limit."})
 
-        # Pyrogram ফাইলটিকে টেলিগ্রামে আপলোড করবে (এটি ডিফল্টভাবেই স্মার্ট স্ট্রিমিং ব্যবহার করে)
-        sent_message = await bot.send_document(chat_id=CHANNEL_ID, document=file_path)
+        # ১. ডাইনামিক সেশন বাছাই করা
+        client = tg_cluster.get_next_client()
+        if not client: raise Exception("No Telegram sessions available!")
 
-        return {"status": "success", "file_name": file.filename, "file_size": file_size, "message_id": sent_message.id}
+        # ২. প্রাইমারি চ্যানেলে আপলোড
+        sent_message = await client.send_document(chat_id=tg_cluster.primary_channel, document=file_path)
+        
+        msg_ids = { "primary": sent_message.id, "backups": [] }
+
+        # ৩. ব্যাকআপ চ্যানেলগুলোতে ফরোয়ার্ড করা (Magic Trick!)
+        for backup_id in tg_cluster.backup_channels:
+            try:
+                fw_msg = await client.forward_messages(chat_id=backup_id, from_chat_id=tg_cluster.primary_channel, message_ids=sent_message.id)
+                msg_ids["backups"].append({"channel": backup_id, "msg_id": fw_msg.id})
+            except Exception as e:
+                print(f"Forwarding to backup {backup_id} failed: {e}")
+
+        import json
+        message_id_payload = json.dumps(msg_ids)
+
+        return {"status": "success", "file_name": file.filename, "file_size": file_size, "message_id": message_id_payload}
 
     except Exception as e:
-        print(f"!!! UPLOAD ERROR/CANCELED: {e} !!!")
+        print(f"!!! UPLOAD ERROR: {e} !!!")
         return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
         
     finally:
-        # 🚨 Memory Leak Protection: আপলোড সাকসেস হোক বা ক্যানসেল হোক, সার্ভারের ডিস্ক ক্লিন করে দেওয়া হবে
+        active_tasks -= 1
         if 'file_path' in locals() and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception as e:
-                print(f"Cleanup error: {e}")
+            try: os.remove(file_path)
+            except: pass
 
 # --- Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}/{file_name:path}")
-async def download_file(message_id: int, file_name: str, request: Request):
+async def download_file(message_id: str, file_name: str, request: Request):
+    global active_tasks
+    if active_tasks >= MAX_ACTIVE_TASKS:
+        return JSONResponse(status_code=503, content={"error": "Server is busy. Please wait a moment."})
+    
+    active_tasks += 1
     try:
-        message = await bot.get_messages(CHANNEL_ID, message_id)
-        
-        # মেসেজ ডিলিট হয়ে গেলে বা ফাইল না থাকলে
-        if not message or getattr(message, "empty", False) or (not getattr(message, "document", None) and not getattr(message, "video", None) and not getattr(message, "photo", None)):
-            return JSONResponse(status_code=404, content={"error": "File not found or deleted from Telegram"})
+        client = tg_cluster.get_next_client()
+        if not client: raise Exception("No Telegram sessions available!")
+
+        # Parse new multi-channel payload (JSON) and fallback legacy ID
+        targets = []
+        try:
+            payload = json.loads(urllib.parse.unquote(message_id))
+            targets.append((tg_cluster.primary_channel, payload.get("primary")))
+            for b in payload.get("backups", []):
+                targets.append((b["channel"], b["msg_id"]))
+        except Exception:
+            targets.append((tg_cluster.primary_channel, int(message_id)))
+
+        message = None
+        for chat_id, msg_id in targets:
+            try:
+                msg = await client.get_messages(chat_id, msg_id)
+                if msg and not getattr(msg, "empty", False) and (msg.document or msg.video or msg.photo):
+                    message = msg
+                    break # Found valid message!
+            except Exception: continue
+
+        if not message:
+            return JSONResponse(status_code=404, content={"error": "File not found in any cloud channels"})
 
         media = message.document or message.video or message.photo
-        
-        # ফিক্স: ইউজার যে রিনেম করা নাম পাঠিয়েছে সেটাই যেন ইউজ হয়, টেলিগ্রামের পুরোনো নাম যেন না বসে।
-        if not file_name or file_name.strip() == "":
-            file_name = getattr(media, "file_name", f"file_{message_id}")
-            
+        if not file_name or file_name.strip() == "": file_name = getattr(media, "file_name", f"file_{message.id}")
         file_size = getattr(media, "file_size", 0)
         mime_type = getattr(media, "mime_type", "application/octet-stream")
 
-        if file_size == 0:
-            return JSONResponse(status_code=400, content={"error": "File size is 0 bytes (corrupted upload)"})
+        if file_size == 0: return JSONResponse(status_code=400, content={"error": "File size is 0 bytes"})
 
         range_header = request.headers.get("Range")
-        start = 0
-        end = file_size - 1
-        status_code = 200
-
+        start = 0; end = file_size - 1; status_code = 200
         if range_header:
             range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
             if range_match:
@@ -303,11 +386,8 @@ async def download_file(message_id: int, file_name: str, request: Request):
                 end = int(end_str) if end_str else file_size - 1
                 status_code = 206 
 
-        # ফিক্স: ব্রোকেন পাইপ এরর চিরতরে দূর করার জন্য ফুল-প্রুফ স্ট্যান্ডার্ড এনকোডিং (ASCII + UTF-8)
         safe_ascii_name = file_name.encode('ascii', 'ignore').decode('ascii').replace('"', '').replace('\n', '')
-        if not safe_ascii_name:
-            safe_ascii_name = f"file_{message_id}"
-            
+        if not safe_ascii_name: safe_ascii_name = f"file_{message.id}"
         encoded_name = urllib.parse.quote(file_name)
 
         headers = {
@@ -317,25 +397,21 @@ async def download_file(message_id: int, file_name: str, request: Request):
             "Content-Disposition": f'attachment; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}'
         }
 
-        # Pyrogram থেকে নির্দিষ্ট বাইট (offset) থেকে স্ট্রিম করা
         async def ranged_file_streamer():
             async with download_semaphore: 
                 try:
-                    async for chunk in bot.stream_media(message, offset=start, limit=(end - start + 1)):
-                        if await request.is_disconnected():
-                            print("User canceled the download. Releasing slot...")
-                            break
+                    async for chunk in client.stream_media(message, offset=start, limit=(end - start + 1)):
+                        if await request.is_disconnected(): break
                         yield chunk
-                except asyncio.CancelledError:
-                    print("Download task was canceled by browser. Slot freed.")
-                except Exception as e:
-                    print(f"Stream interrupted: {e}")
+                except asyncio.CancelledError: pass
+                except Exception as e: print(f"Stream interrupted: {e}")
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
     except Exception as e:
-        print(f"Download Error: {e}")
-        return JSONResponse(status_code=500, content={"error": f"Internal Server Error: {str(e)}"})
+        return JSONResponse(status_code=500, content={"error": f"Internal Error: {str(e)}"})
+    finally:
+        active_tasks -= 1
 
 @app.post("/prepare-zip")
 async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
@@ -377,24 +453,37 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
         temp_dir = os.path.join(base_dir, f"temp_folder_{unique_id}")
         os.makedirs(temp_dir, exist_ok=True)
         
+        client = tg_cluster.get_next_client()
         for f in files:
-            msg_id = int(f.get("message_id")) 
+            raw_msg_id = str(f.get("message_id")) 
             file_name = f.get("file_name")
             path = f.get("path", "")
             
-            message = await bot.get_messages(CHANNEL_ID, msg_id)
-            if message and not getattr(message, "empty", False):
-                
-                # ফিক্স ২: ফাইলের নামে স্ল্যাশ (/) থাকলে সেটি ভুল ডিরেক্টরিতে চলে যাওয়ার চেষ্টা করে, তাই basename ব্যবহার করা হলো
+            targets = []
+            try:
+                payload = json.loads(urllib.parse.unquote(raw_msg_id))
+                targets.append((tg_cluster.primary_channel, payload.get("primary")))
+                for b in payload.get("backups", []):
+                    targets.append((b["channel"], b["msg_id"]))
+            except Exception:
+                targets.append((tg_cluster.primary_channel, int(raw_msg_id)))
+
+            message = None
+            for chat_id, m_id in targets:
+                try:
+                    msg = await client.get_messages(chat_id, m_id)
+                    if msg and not getattr(msg, "empty", False):
+                        message = msg
+                        break
+                except Exception: continue
+            
+            if message:
                 safe_file_name = os.path.basename(file_name)
                 save_dir = os.path.join(temp_dir, path)
                 os.makedirs(save_dir, exist_ok=True)
-                
                 save_path = os.path.abspath(os.path.join(save_dir, safe_file_name))
-                
-                # ফিক্স ৩: কোনো একটি ফাইল ডাউনলোড ফেইল করলে পুরো জিপ প্রসেস যেন ক্র্যাশ না করে, সেটির প্রোটেকশন
                 try:
-                    await bot.download_media(message, file_name=save_path)
+                    await client.download_media(message, file_name=save_path)
                 except Exception as e:
                     print(f"Skipping file {safe_file_name} due to error: {e}")
                     continue
@@ -439,48 +528,92 @@ async def download_ready_zip(zip_id: str, file_name: str):
     )
 
 @app.delete("/delete/{message_id}")
-async def delete_file(message_id: int, user_token: dict = Depends(verify_token)):
+async def delete_file(message_id: str, user_token: dict = Depends(verify_token)):
     try:
-        await bot.delete_messages(chat_id=CHANNEL_ID, message_ids=message_id)
+        to_delete = {}
+        try:
+            payload = json.loads(urllib.parse.unquote(message_id))
+            p_chat = tg_cluster.primary_channel
+            to_delete[p_chat] = [payload.get("primary")]
+            for b in payload.get("backups", []):
+                b_chat = b["channel"]
+                if b_chat not in to_delete: to_delete[b_chat] = []
+                to_delete[b_chat].append(b["msg_id"])
+        except Exception:
+            to_delete[tg_cluster.primary_channel] = [int(message_id)]
+
+        client = tg_cluster.get_next_client()
+        for chat_id, ids in to_delete.items():
+            try: await client.delete_messages(chat_id=chat_id, message_ids=ids)
+            except Exception: pass
+            
         return {"status": "success"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-# --- নতুন: প্রফেশনাল Bulk Delete (Background Task) ---
+# --- Professional Bulk Delete (Multi-Channel) ---
 async def delete_messages_in_background(message_ids: list):
-    # টেলিগ্রাম একসাথে ১০০টি মেসেজ ডিলিট করতে দেয়, তাই ১০০ করে ভাগ (chunk) করা হলো
-    chunk_size = 100
-    for i in range(0, len(message_ids), chunk_size):
-        chunk = message_ids[i:i + chunk_size]
+    to_delete = {} 
+    for item in message_ids:
         try:
-            await bot.delete_messages(chat_id=CHANNEL_ID, message_ids=chunk)
-            await asyncio.sleep(1) # ফ্লাড-ওয়েট এড়াতে ১ সেকেন্ড ডিলে
-        except Exception as e:
-            print(f"Bulk delete error: {e}")
+            payload = json.loads(str(item))
+            p_chat = tg_cluster.primary_channel
+            if p_chat not in to_delete: to_delete[p_chat] = []
+            to_delete[p_chat].append(payload.get("primary"))
+            
+            for b in payload.get("backups", []):
+                b_chat = b["channel"]
+                if b_chat not in to_delete: to_delete[b_chat] = []
+                to_delete[b_chat].append(b["msg_id"])
+        except Exception:
+            p_chat = tg_cluster.primary_channel
+            if p_chat not in to_delete: to_delete[p_chat] = []
+            try: to_delete[p_chat].append(int(item))
+            except: pass
+
+    client = tg_cluster.get_next_client()
+    if not client: return
+
+    for chat_id, ids in to_delete.items():
+        for i in range(0, len(ids), 100):
+            chunk = ids[i:i + 100]
+            try:
+                await client.delete_messages(chat_id=chat_id, message_ids=chunk)
+                await asyncio.sleep(1) 
+            except Exception: pass
 
 @app.post("/bulk-delete")
 async def bulk_delete_files(request_data: BulkDeleteRequest, background_tasks: BackgroundTasks, user_token: dict = Depends(verify_token)):
-    # 🚨 Maintenance Mode Protection
     try:
         maintenance_ref = fb_db.reference('system_settings/maintenance_mode')
         m_data = maintenance_ref.get()
         if m_data and isinstance(m_data, dict):
             if m_data.get('status') == 'active':
                 return JSONResponse(status_code=403, content={"status": "error", "message": "Server is under maintenance!"})
-    except Exception as e:
-        pass
+    except Exception: pass
 
-    if not request_data.message_ids:
-        return {"status": "success", "message": "No files to delete"}
+    msg_ids = getattr(request_data, 'message_ids', [])
+    if not msg_ids: return {"status": "success"}
     
-    # ব্রাউজারকে সাথে সাথে রেসপন্স দিয়ে ব্যাকগ্রাউন্ডে ডিলিট প্রসেস শুরু করা হলো
-    background_tasks.add_task(delete_messages_in_background, request_data.message_ids)
-    
-    return {"status": "success", "message": f"Started deleting {len(request_data.message_ids)} files in background"}
-# --- Admin Panel এর জন্য Central Verification API ---
+    background_tasks.add_task(delete_messages_in_background, msg_ids)
+    return {"status": "success", "message": f"Deleting {len(msg_ids)} files"}
+
+# --- Admin Panel APIs ---
 @app.get("/get-admin-config")
 async def get_admin_config():
     return {"admin_uids": ADMIN_UIDS}
+
+@app.post("/reload-telegram-cluster")
+async def reload_telegram_cluster(user_token: dict = Depends(verify_token)):
+    try:
+        uid = user_token.get("uid")
+        is_admin = fb_db.reference(f'admins/{uid}').get()
+        if not is_admin: return JSONResponse(status_code=403, content={"error": "Admin only"})
+        
+        await tg_cluster.reload_config()
+        return {"status": "success", "message": "Cluster reloaded successfully!"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 # Server-side Delete API has been removed. 
 # Deletion is now handled directly via Client-side Firebase SDK to prevent server errors.
