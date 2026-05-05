@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 pyrogram
-TgCrypto
-python-multipart
+tgcrypto
 firebase-admin
 python-dotenv
+python-multipart
