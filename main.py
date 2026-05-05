@@ -117,6 +117,7 @@ class TelegramCluster:
             
             api_id = int(config_ref.get('api_id', ENV_API_ID)) if config_ref else ENV_API_ID
             api_hash = config_ref.get('api_hash', ENV_API_HASH) if config_ref else ENV_API_HASH
+            bot_token = config_ref.get('bot_token', os.environ.get("BOT_TOKEN", "")) if config_ref else os.environ.get("BOT_TOKEN", "")
             
             sessions_str = config_ref.get('sessions', ENV_SESSION_STRING) if config_ref else ENV_SESSION_STRING
             sessions = [s.strip() for s in sessions_str.split(',') if s.strip()]
@@ -124,8 +125,8 @@ class TelegramCluster:
             channels_str = config_ref.get('channels', str(ENV_CHANNEL_ID)) if config_ref else str(ENV_CHANNEL_ID)
             channels = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
 
-            if not sessions or not channels:
-                print("⚠️ Telegram Config Missing!")
+            if (not sessions and not bot_token) or not channels:
+                print("⚠️ Telegram Config Missing! Need Session/Bot Token and at least 1 Channel.")
                 return
 
             self.primary_channel = channels[0]
@@ -136,13 +137,35 @@ class TelegramCluster:
                 except: pass
             self.clients.clear()
 
+            # ১. Bot Token দিয়ে ক্লায়েন্ট স্টার্ট করা (যদি থাকে)
+            if bot_token:
+                try:
+                    bot_client = Client("main_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token, in_memory=True)
+                    await bot_client.start()
+                    
+                    print("🔄 Scanning chats for Main Bot to fix Peer ID...")
+                    async for _ in bot_client.get_dialogs(limit=50): pass
+                    
+                    self.clients.append(bot_client)
+                    print("✅ Main Bot logged in via Bot Token successfully!")
+                except Exception as e:
+                    print(f"❌ Failed to start Main Bot: {e}")
+
+            # ২. User Session দিয়ে ক্লায়েন্ট স্টার্ট করা (যদি থাকে)
             for idx, session in enumerate(sessions):
-                client = Client(f"session_{idx}", api_id=api_id, api_hash=api_hash, session_string=session, in_memory=True)
-                await client.start()
-                self.clients.append(client)
+                try:
+                    client = Client(f"session_{idx}", api_id=api_id, api_hash=api_hash, session_string=session, in_memory=True)
+                    await client.start()
+                    
+                    print(f"🔄 Scanning chats to fix Peer ID for session {idx}...")
+                    async for _ in client.get_dialogs(limit=50): pass
+                    
+                    self.clients.append(client)
+                except Exception as e:
+                    print(f"❌ Failed to start Session {idx}: {e}")
             
             self.is_ready = True
-            print(f"✅ Telegram Cluster Ready: {len(self.clients)} Sessions, 1 Primary, {len(self.backup_channels)} Backups.")
+            print(f"✅ Telegram Cluster Ready: {len(self.clients)} Active Accounts/Bots, 1 Primary Channel, {len(self.backup_channels)} Backups.")
         except Exception as e:
             print(f"❌ Cluster Boot Error: {e}")
 
@@ -312,13 +335,14 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
         
         msg_ids = { "primary": sent_message.id, "backups": [] }
 
-        # ৩. ব্যাকআপ চ্যানেলগুলোতে ফরোয়ার্ড করা (Magic Trick!)
+        # ৩. ব্যাকআপ চ্যানেলগুলোতে ফরোয়ার্ড করা (Magic Copy Trick!)
         for backup_id in tg_cluster.backup_channels:
             try:
-                fw_msg = await client.forward_messages(chat_id=backup_id, from_chat_id=tg_cluster.primary_channel, message_ids=sent_message.id)
+                # forward_messages এর বদলে copy_message ব্যবহার করা হলো। এটি ১০০% কাজ করবে এবং "Forwarded from" ট্যাগ থাকবে না।
+                fw_msg = await client.copy_message(chat_id=backup_id, from_chat_id=tg_cluster.primary_channel, message_id=sent_message.id)
                 msg_ids["backups"].append({"channel": backup_id, "msg_id": fw_msg.id})
             except Exception as e:
-                print(f"Forwarding to backup {backup_id} failed: {e}")
+                print(f"⚠️ Copy to backup channel {backup_id} failed: {e}")
 
         import json
         message_id_payload = json.dumps(msg_ids)
@@ -351,23 +375,27 @@ async def download_file(message_id: str, file_name: str, request: Request):
         targets = []
         try:
             payload = json.loads(urllib.parse.unquote(message_id))
-            targets.append((tg_cluster.primary_channel, payload.get("primary")))
+            # 🚨 ইন্টিজার (int) কাস্টিং করা হলো, নাহলে Pyrogram এরর দেবে
+            targets.append((int(tg_cluster.primary_channel), int(payload.get("primary"))))
             for b in payload.get("backups", []):
-                targets.append((b["channel"], b["msg_id"]))
+                targets.append((int(b["channel"]), int(b["msg_id"])))
         except Exception:
-            targets.append((tg_cluster.primary_channel, int(message_id)))
+            targets.append((int(tg_cluster.primary_channel), int(message_id)))
 
         message = None
+        # 🚨 Smart Round-Robin Fallback: প্রাইমারি ফেইল করলে ব্যাকআপগুলো চেক করবে
         for chat_id, msg_id in targets:
             try:
-                msg = await client.get_messages(chat_id, msg_id)
-                if msg and not getattr(msg, "empty", False) and (msg.document or msg.video or msg.photo):
+                msg = await client.get_messages(chat_id=chat_id, message_ids=msg_id)
+                if msg and not getattr(msg, "empty", False) and getattr(msg, "media", None):
                     message = msg
-                    break # Found valid message!
-            except Exception: continue
+                    break # ফাইল পাওয়া গেছে! লুপ ব্রেক।
+            except Exception as e:
+                print(f"⚠️ Fallback Active: Failed in {chat_id}, trying next... Error: {e}")
+                continue
 
         if not message:
-            return JSONResponse(status_code=404, content={"error": "File not found in any cloud channels"})
+            return JSONResponse(status_code=404, content={"error": "File totally lost! Not found in primary or any backup channels."})
 
         media = message.document or message.video or message.photo
         if not file_name or file_name.strip() == "": file_name = getattr(media, "file_name", f"file_{message.id}")
@@ -462,20 +490,22 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
             targets = []
             try:
                 payload = json.loads(urllib.parse.unquote(raw_msg_id))
-                targets.append((tg_cluster.primary_channel, payload.get("primary")))
+                targets.append((int(tg_cluster.primary_channel), int(payload.get("primary"))))
                 for b in payload.get("backups", []):
-                    targets.append((b["channel"], b["msg_id"]))
+                    targets.append((int(b["channel"]), int(b["msg_id"])))
             except Exception:
-                targets.append((tg_cluster.primary_channel, int(raw_msg_id)))
+                targets.append((int(tg_cluster.primary_channel), int(raw_msg_id)))
 
             message = None
             for chat_id, m_id in targets:
                 try:
-                    msg = await client.get_messages(chat_id, m_id)
-                    if msg and not getattr(msg, "empty", False):
+                    msg = await client.get_messages(chat_id=chat_id, message_ids=m_id)
+                    if msg and not getattr(msg, "empty", False) and getattr(msg, "media", None):
                         message = msg
                         break
-                except Exception: continue
+                except Exception as e: 
+                    print(f"⚠️ ZIP Fallback Active: Skipping {chat_id}, trying next...")
+                    continue
             
             if message:
                 safe_file_name = os.path.basename(file_name)
