@@ -147,11 +147,41 @@ class TelegramCluster:
                     else:
                         b_api_id, b_api_hash, token = global_api_id, global_api_hash, parts[0].strip()
                         
-                    # 🚨 MAJOR FIX: in_memory=True বাদ দিয়ে Physical Session ফাইল ব্যবহার করা হচ্ছে।
-                    # এতে বট একবার চ্যানেল চিনতে পারলে আর কখনোই Peer ID Invalid বলবে না।
-                    session_name = f"bot_session_{idx}"
-                    bot_client = Client(session_name, api_id=b_api_id, api_hash=b_api_hash, bot_token=token)
+                    # 🚨 FIX 1: Render-এর জন্য in_memory=True রাখতেই হবে, নাহলে রিস্টার্ট দিলে সব মুছে যাবে!
+                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
                     await bot_client.start()
+                    
+                    # 🚨 FIX 2: HTTP API Force Sync - Peer ID Invalid সমস্যার পার্মানেন্ট সমাধান
+                    all_channels = [self.primary_channel] + self.backup_channels
+                    for ch_id in all_channels:
+                        try:
+                            import urllib.request
+                            import json
+                            
+                            # প্রথমে টেলিগ্রামের অফিশিয়াল API দিয়ে চ্যানেল চেক করা হচ্ছে
+                            url = f"https://api.telegram.org/bot{token}/getChat?chat_id={ch_id}"
+                            req = urllib.request.Request(url)
+                            with urllib.request.urlopen(req) as response:
+                                res = json.loads(response.read().decode())
+                                if res.get("ok"):
+                                    try:
+                                        # Pyrogram-কে চ্যানেল চেনানোর চেষ্টা
+                                        await bot_client.get_chat(ch_id)
+                                    except Exception:
+                                        # ব্যর্থ হলে ডামি মেসেজ পাঠিয়ে ফোর্স সিঙ্ক করবে
+                                        send_url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={ch_id}&text=System_Sync"
+                                        send_req = urllib.request.Request(send_url)
+                                        with urllib.request.urlopen(send_req) as send_res:
+                                            msg_data = json.loads(send_res.read().decode())
+                                            m_id = msg_data['result']['message_id']
+                                            # সাথে সাথে ডিলিট করে দেবে
+                                            del_url = f"https://api.telegram.org/bot{token}/deleteMessage?chat_id={ch_id}&message_id={m_id}"
+                                            urllib.request.urlopen(urllib.request.Request(del_url))
+                                            await asyncio.sleep(1) # Pyrogram ক্যাশ করার জন্য ১ সেকেন্ড সময় দেওয়া হলো
+                        except urllib.error.HTTPError as http_e:
+                            print(f"❌ Error: Bot {idx} cannot access channel {ch_id}. Telegram says: {http_e.read().decode()}")
+                        except Exception as e:
+                            print(f"⚠️ General Sync Error for Bot {idx}: {e}")
                     
                     # 🚨 ULTIMATE PEER ID FIX (HTTP Force Sync)
                     all_channels = [self.primary_channel] + self.backup_channels
