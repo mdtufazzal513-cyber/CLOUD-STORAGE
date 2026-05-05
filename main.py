@@ -150,14 +150,47 @@ class TelegramCluster:
                     bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
                     await bot_client.start()
                     
-                    # 🚨 PEER ID FIX: বট যেসব চ্যানেলে এডমিন, সেগুলো মেমোরিতে ক্যাশ করা হচ্ছে
+                    # 🚨 ADVANCED PEER ID FIX & DIAGNOSTICS
                     all_channels = [self.primary_channel] + self.backup_channels
                     for ch_id in all_channels:
                         try:
-                            # get_chat() কল করলে বট চ্যানেলটির ডেটা টেলিগ্রাম থেকে ফেচ করে মেমোরিতে সেভ করে নেবে
                             await bot_client.get_chat(ch_id)
                         except Exception as ce:
-                            print(f"⚠️ Warning: Bot {idx} cannot cache channel {ch_id}. Error: {ce}")
+                            print(f"⚠️ Pyrogram failed to cache {ch_id}. Attempting HTTP Force-Sync...")
+                            import urllib.request
+                            import json
+                            
+                            # 1. Check via Official Telegram HTTP API
+                            check_url = f"https://api.telegram.org/bot{token}/getChat?chat_id={ch_id}"
+                            try:
+                                req = urllib.request.Request(check_url)
+                                with urllib.request.urlopen(req) as response:
+                                    res = json.loads(response.read().decode())
+                                    if res.get("ok"):
+                                        print(f"✅ HTTP API sees the channel! Forcing MTProto Sync...")
+                                        # Force sync by sending a dummy message and deleting it instantly
+                                        send_url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={ch_id}&text=Syncing..."
+                                        try:
+                                            send_req = urllib.request.Request(send_url)
+                                            with urllib.request.urlopen(send_req) as send_res:
+                                                send_data = json.loads(send_res.read().decode())
+                                                msg_id = send_data['result']['message_id']
+                                                
+                                                # Delete the dummy message
+                                                del_url = f"https://api.telegram.org/bot{token}/deleteMessage?chat_id={ch_id}&message_id={msg_id}"
+                                                urllib.request.urlopen(urllib.request.Request(del_url))
+                                                
+                                                print(f"✅ Force Sync successful! Pyrogram should work now.")
+                                                try:
+                                                    await bot_client.get_chat(ch_id)
+                                                except: pass
+                                        except Exception as e2:
+                                            print(f"⚠️ Could not send sync message. Check Bot Permissions. Error: {e2}")
+                            except urllib.error.HTTPError as http_e:
+                                error_msg = http_e.read().decode()
+                                print(f"❌ CRITICAL ERROR for Bot {idx}: Telegram API rejected the Channel ID ({ch_id})!")
+                                print(f"❌ Reason from Telegram: {error_msg}")
+                                print("👉 FIX: Please check if the Bot Token is correct, the Channel ID is correct, and the Bot is an Admin in that exact channel.")
                     
                     self.clients.append(bot_client)
 
