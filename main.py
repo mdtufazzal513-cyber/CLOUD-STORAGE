@@ -91,7 +91,6 @@ load_dotenv() # লোকাল পিসির জন্য .env লোড ক�
 # Bootstrapping Variables (Fallback)
 ENV_API_ID = int(os.environ.get("API_ID", 0))
 ENV_API_HASH = os.environ.get("API_HASH", "")
-ENV_SESSION_STRING = os.environ.get("SESSION_STRING", "")
 ENV_CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
 ADMIN_UIDS = os.environ.get("ADMIN_UIDS", "")
 
@@ -122,15 +121,11 @@ class TelegramCluster:
             bot_tokens_str = config_ref.get('bot_tokens', config_ref.get('bot_token', os.environ.get("BOT_TOKEN", ""))) if config_ref else os.environ.get("BOT_TOKEN", "")
             raw_bots = [b.strip() for b in bot_tokens_str.split(',') if b.strip()]
             
-            # একাধিক সেশন সাপোর্ট (Format: api_id|api_hash|session_string OR just session_string)
-            sessions_str = config_ref.get('sessions', ENV_SESSION_STRING) if config_ref else ENV_SESSION_STRING
-            raw_sessions = [s.strip() for s in sessions_str.split(',') if s.strip()]
-            
             channels_str = config_ref.get('channels', str(ENV_CHANNEL_ID)) if config_ref else str(ENV_CHANNEL_ID)
             channels = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
 
-            if (not raw_sessions and not raw_bots) or not channels:
-                print("⚠️ Telegram Config Missing! Need at least 1 Account and 1 Channel.")
+            if not raw_bots or not channels:
+                print("⚠️ Telegram Config Missing! Need at least 1 Bot Token and 1 Channel.")
                 return
 
             self.primary_channel = channels[0]
@@ -160,25 +155,6 @@ class TelegramCluster:
                     print(f"✅ Dummy Bot {idx + 1} logged in successfully!")
                 except Exception as e:
                     print(f"❌ Failed to start Dummy Bot {idx + 1}: {e}")
-
-            # ২. User Session দিয়ে ক্লায়েন্ট স্টার্ট করা (যদি থাকে)
-            for idx, s_data in enumerate(raw_sessions):
-                try:
-                    parts = s_data.split('|')
-                    if len(parts) >= 3:
-                        s_api_id, s_api_hash, session = int(parts[0].strip()), parts[1].strip(), parts[2].strip()
-                    else:
-                        s_api_id, s_api_hash, session = global_api_id, global_api_hash, parts[0].strip()
-                        
-                    client = Client(f"session_{idx}", api_id=s_api_id, api_hash=s_api_hash, session_string=session, in_memory=True)
-                    await client.start()
-                    
-                    print(f"🔄 Scanning chats to fix Peer ID for session {idx}...")
-                    async for _ in client.get_dialogs(limit=50): pass
-                    
-                    self.clients.append(client)
-                except Exception as e:
-                    print(f"❌ Failed to start Session {idx}: {e}")
             
             self.is_ready = True
             print(f"✅ Telegram Cluster Ready: {len(self.clients)} Active Accounts/Bots, 1 Primary Channel, {len(self.backup_channels)} Backups.")
