@@ -115,18 +115,22 @@ class TelegramCluster:
         try:
             config_ref = fb_db.reference('system_settings/telegram_config').get()
             
-            api_id = int(config_ref.get('api_id', ENV_API_ID)) if config_ref else ENV_API_ID
-            api_hash = config_ref.get('api_hash', ENV_API_HASH) if config_ref else ENV_API_HASH
-            bot_token = config_ref.get('bot_token', os.environ.get("BOT_TOKEN", "")) if config_ref else os.environ.get("BOT_TOKEN", "")
+            global_api_id = int(config_ref.get('api_id', ENV_API_ID)) if config_ref else ENV_API_ID
+            global_api_hash = config_ref.get('api_hash', ENV_API_HASH) if config_ref else ENV_API_HASH
             
+            # একাধিক বট সাপোর্ট (Format: api_id|api_hash|bot_token OR just bot_token)
+            bot_tokens_str = config_ref.get('bot_tokens', config_ref.get('bot_token', os.environ.get("BOT_TOKEN", ""))) if config_ref else os.environ.get("BOT_TOKEN", "")
+            raw_bots = [b.strip() for b in bot_tokens_str.split(',') if b.strip()]
+            
+            # একাধিক সেশন সাপোর্ট (Format: api_id|api_hash|session_string OR just session_string)
             sessions_str = config_ref.get('sessions', ENV_SESSION_STRING) if config_ref else ENV_SESSION_STRING
-            sessions = [s.strip() for s in sessions_str.split(',') if s.strip()]
+            raw_sessions = [s.strip() for s in sessions_str.split(',') if s.strip()]
             
             channels_str = config_ref.get('channels', str(ENV_CHANNEL_ID)) if config_ref else str(ENV_CHANNEL_ID)
             channels = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
 
-            if (not sessions and not bot_token) or not channels:
-                print("⚠️ Telegram Config Missing! Need Session/Bot Token and at least 1 Channel.")
+            if (not raw_sessions and not raw_bots) or not channels:
+                print("⚠️ Telegram Config Missing! Need at least 1 Account and 1 Channel.")
                 return
 
             self.primary_channel = channels[0]
@@ -137,24 +141,36 @@ class TelegramCluster:
                 except: pass
             self.clients.clear()
 
-            # ১. Bot Token দিয়ে ক্লায়েন্ট স্টার্ট করা (যদি থাকে)
-            if bot_token:
+            # ১. Dummy Bots দিয়ে ক্লায়েন্ট স্টার্ট করা (লুপের মাধ্যমে)
+            for idx, b_data in enumerate(raw_bots):
                 try:
-                    bot_client = Client("main_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token, in_memory=True)
+                    parts = b_data.split('|')
+                    if len(parts) >= 3:
+                        b_api_id, b_api_hash, token = int(parts[0].strip()), parts[1].strip(), parts[2].strip()
+                    else:
+                        b_api_id, b_api_hash, token = global_api_id, global_api_hash, parts[0].strip()
+                        
+                    bot_client = Client(f"dummy_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
                     await bot_client.start()
                     
-                    print("🔄 Scanning chats for Main Bot to fix Peer ID...")
+                    print(f"🔄 Scanning chats for Dummy Bot {idx + 1} to fix Peer ID...")
                     async for _ in bot_client.get_dialogs(limit=50): pass
                     
                     self.clients.append(bot_client)
-                    print("✅ Main Bot logged in via Bot Token successfully!")
+                    print(f"✅ Dummy Bot {idx + 1} logged in successfully!")
                 except Exception as e:
-                    print(f"❌ Failed to start Main Bot: {e}")
+                    print(f"❌ Failed to start Dummy Bot {idx + 1}: {e}")
 
             # ২. User Session দিয়ে ক্লায়েন্ট স্টার্ট করা (যদি থাকে)
-            for idx, session in enumerate(sessions):
+            for idx, s_data in enumerate(raw_sessions):
                 try:
-                    client = Client(f"session_{idx}", api_id=api_id, api_hash=api_hash, session_string=session, in_memory=True)
+                    parts = s_data.split('|')
+                    if len(parts) >= 3:
+                        s_api_id, s_api_hash, session = int(parts[0].strip()), parts[1].strip(), parts[2].strip()
+                    else:
+                        s_api_id, s_api_hash, session = global_api_id, global_api_hash, parts[0].strip()
+                        
+                    client = Client(f"session_{idx}", api_id=s_api_id, api_hash=s_api_hash, session_string=session, in_memory=True)
                     await client.start()
                     
                     print(f"🔄 Scanning chats to fix Peer ID for session {idx}...")
