@@ -114,8 +114,10 @@ class TelegramCluster:
         try:
             config_ref = fb_db.reference('system_settings/telegram_config').get()
             
-            global_api_id = int(config_ref.get('api_id', ENV_API_ID)) if config_ref else ENV_API_ID
-            global_api_hash = config_ref.get('api_hash', ENV_API_HASH) if config_ref else ENV_API_HASH
+            # Safe Fallback (Prevent 'merged' string from crashing the server)
+            raw_g_id = config_ref.get('api_id', ENV_API_ID) if config_ref else ENV_API_ID
+            global_api_id = int(raw_g_id) if str(raw_g_id).strip().isdigit() else ENV_API_ID
+            global_api_hash = str(config_ref.get('api_hash', ENV_API_HASH)) if config_ref else ENV_API_HASH
             
             # একাধিক বট সাপোর্ট (Format: api_id|api_hash|bot_token OR just bot_token)
             bot_tokens_str = config_ref.get('bot_tokens', config_ref.get('bot_token', os.environ.get("BOT_TOKEN", ""))) if config_ref else os.environ.get("BOT_TOKEN", "")
