@@ -344,7 +344,13 @@ async def ping_server():
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(verify_token)):
     global active_tasks
-    if active_tasks >= MAX_ACTIVE_TASKS:
+    try:
+        db_limit = fb_db.reference('system_settings/max_active_tasks').get()
+        current_max_tasks = int(db_limit) if db_limit else 6
+    except:
+        current_max_tasks = 6
+
+    if active_tasks >= current_max_tasks:
         return JSONResponse(status_code=503, content={"status": "error", "message": "Server is under heavy load. Please wait a moment and try again."})
     
     active_tasks += 1
@@ -418,7 +424,13 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
 @app.get("/download/{message_id}/{file_name:path}")
 async def download_file(message_id: str, file_name: str, request: Request):
     global active_tasks
-    if active_tasks >= MAX_ACTIVE_TASKS:
+    try:
+        db_limit = fb_db.reference('system_settings/max_active_tasks').get()
+        current_max_tasks = int(db_limit) if db_limit else 6
+    except:
+        current_max_tasks = 6
+
+    if active_tasks >= current_max_tasks:
         return JSONResponse(status_code=503, content={"error": "Server is busy. Please wait a moment."})
     
     active_tasks += 1
