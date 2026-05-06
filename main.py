@@ -99,7 +99,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # 🚨 Server RAM Protection (Active Task Counter)
 active_tasks = 0
-MAX_ACTIVE_TASKS = 6 # ফ্রি সার্ভারের জন্য একসাথে ৬টি রিকোয়েস্ট নিরাপদ
+MAX_ACTIVE_TASKS = 50 # 🚀 Direct Streaming এর কারণে সার্ভারে চাপ নেই, তাই একসাথে ৫০ জন আপলোড/ডাউনলোড করতে পারবে!
 
 # --- 🚀 Smart Telegram Cluster Manager ---
 class TelegramCluster:
@@ -366,27 +366,27 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
             if not MAX_ALLOWED_SIZE: MAX_ALLOWED_SIZE = 500 * 1024 * 1024
         except Exception: MAX_ALLOWED_SIZE = 500 * 1024 * 1024
 
-        safe_filename = f"{uuid.uuid4().hex}_{file.filename.replace(' ', '_')}"
-        file_path = os.path.join(UPLOAD_DIR, safe_filename)
-        file_size = 0
-        
-        with open(file_path, "wb") as buffer:
-            while True:
-                chunk = await file.read(1024 * 1024) 
-                if not chunk: break
-                buffer.write(chunk)
-                file_size += len(chunk)
-                if file_size > MAX_ALLOWED_SIZE:
-                    buffer.close()
-                    os.remove(file_path)
-                    return JSONResponse(status_code=400, content={"status": "error", "message": f"Upload aborted! Exceeds limit."})
-
         # ১. ডাইনামিক সেশন বাছাই করা
         client = tg_cluster.get_next_client()
         if not client: raise Exception("No Telegram sessions available!")
 
-        # ২. প্রাইমারি চ্যানেলে আপলোড
-        sent_message = await client.send_document(chat_id=tg_cluster.primary_channel, document=file_path)
+        # 🚀 SMART STREAMING: ফাইল সেভ না করেই সাইজ মাপা হচ্ছে!
+        file.file.seek(0, os.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0) # পয়েন্টার আবার শুরুতে আনা হলো
+
+        if file_size > MAX_ALLOWED_SIZE:
+            return JSONResponse(status_code=400, content={"status": "error", "message": f"Upload aborted! Exceeds limit."})
+
+        # 🚀 Direct Pass-through: ডাবল সেভিং অফ! FastAPI's internal file directly passed to Pyrogram
+        setattr(file.file, "name", file.filename) # Pyrogram-কে ফাইলের নাম চেনানোর ট্রিক
+
+        # ২. প্রাইমারি চ্যানেলে আপলোড (সরাসরি স্ট্রিম)
+        sent_message = await client.send_document(
+            chat_id=tg_cluster.primary_channel, 
+            document=file.file,
+            file_name=file.filename
+        )
         
         msg_ids = { "primary": sent_message.id, "backups": [] }
 
@@ -410,9 +410,10 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
         
     finally:
         active_tasks -= 1
-        if 'file_path' in locals() and os.path.exists(file_path):
-            try: os.remove(file_path)
-            except: pass
+        # 🚀 FastAPI নিজে থেকে মেমোরি ক্লিন করে, তবে আমরা ম্যানুয়ালি ফাইল ক্লোজ করে দিচ্ছি যাতে RAM সাথে সাথে ফ্রি হয়।
+        try:
+            file.file.close()
+        except: pass
 
 # --- Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}/{file_name:path}")
