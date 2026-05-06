@@ -366,43 +366,43 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
             if not MAX_ALLOWED_SIZE: MAX_ALLOWED_SIZE = 500 * 1024 * 1024
         except Exception: MAX_ALLOWED_SIZE = 500 * 1024 * 1024
 
-        # ১. ডাইনামিক সেশন বাছাই করা
-        client = tg_cluster.get_next_client()
-        if not client: raise Exception("No Telegram sessions available!")
-
-        # 🚀 SMART STREAMING: ফাইল সেভ না করেই সাইজ মাপা হচ্ছে!
+        # 🚀 ১. ডিস্কে সেভ না করে সরাসরি সাইজ মাপা হচ্ছে
         file.file.seek(0, os.SEEK_END)
         file_size = file.file.tell()
-        file.file.seek(0) # পয়েন্টার আবার শুরুতে আনা হলো
+        file.file.seek(0) # পয়েন্টার শুরুতে আনা হলো
 
         if file_size > MAX_ALLOWED_SIZE:
             return JSONResponse(status_code=400, content={"status": "error", "message": f"Upload aborted! Exceeds limit."})
 
-        # 🚀 Pyrogram-কে ধোঁকা দেওয়ার জন্য File Wrapper Class (যেহেতু SpooledTemporaryFile এর নাম চেঞ্জ করা যায় না)
-        class TelegramFileWrapper:
-            def __init__(self, file_obj, filename):
-                self.file_obj = file_obj
-                self.name = filename # Pyrogram এই নামটাই খুঁজবে
-            def read(self, *args): return self.file_obj.read(*args)
-            def seek(self, *args): return self.file_obj.seek(*args)
-            def tell(self, *args): return self.file_obj.tell(*args)
-            def close(self): pass # FastAPI নিজেই ক্লোজ করবে, তাই এখানে পাস করা হলো
+        # ২. ডাইনামিক সেশন বাছাই করা
+        client = tg_cluster.get_next_client()
+        if not client: raise Exception("No Telegram sessions available!")
 
-        wrapped_file = TelegramFileWrapper(file.file, file.filename)
+        # 🚀 ৩. Pyrogram-কে ধোঁকা দেওয়ার জন্য স্মার্ট স্ট্রিম র‍্যাপার (কোনো setattr এরর খাবে না)
+        class StreamWrapper:
+            def __init__(self, f, name):
+                self._f = f
+                self._name = name
+            @property
+            def name(self): return self._name # SpooledTemporaryFile এর নাম এভাবে পাস করা হলো
+            def read(self, *args, **kwargs): return self._f.read(*args, **kwargs)
+            def seek(self, *args, **kwargs): return self._f.seek(*args, **kwargs)
+            def tell(self, *args, **kwargs): return self._f.tell(*args, **kwargs)
 
-        # ২. প্রাইমারি চ্যানেলে আপলোড (সরাসরি স্ট্রিম)
+        wrapped_stream = StreamWrapper(file.file, file.filename)
+
+        # ৪. প্রাইমারি চ্যানেলে আপলোড (সরাসরি স্ট্রিম)
         sent_message = await client.send_document(
             chat_id=tg_cluster.primary_channel, 
-            document=wrapped_file,
+            document=wrapped_stream,
             file_name=file.filename
         )
         
         msg_ids = { "primary": sent_message.id, "backups": [] }
 
-        # ৩. ব্যাকআপ চ্যানেলগুলোতে ফরোয়ার্ড করা (Magic Copy Trick!)
+        # ৫. ব্যাকআপ চ্যানেলগুলোতে ফরোয়ার্ড করা (Magic Copy Trick!)
         for backup_id in tg_cluster.backup_channels:
             try:
-                # forward_messages এর বদলে copy_message ব্যবহার করা হলো। এটি ১০০% কাজ করবে এবং "Forwarded from" ট্যাগ থাকবে না।
                 fw_msg = await client.copy_message(chat_id=backup_id, from_chat_id=tg_cluster.primary_channel, message_id=sent_message.id)
                 msg_ids["backups"].append({"channel": backup_id, "msg_id": fw_msg.id})
             except Exception as e:
@@ -418,6 +418,11 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
         return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
         
     finally:
+        active_tasks -= 1
+        # 🚀 ৬. কাজ শেষে ফাইল স্ট্রিম ক্লিন করে সার্ভারের RAM ফ্রি করে দেওয়া হলো
+        try: file.file.close()
+        except: pass
+
         active_tasks -= 1
         # 🚀 FastAPI নিজে থেকে মেমোরি ক্লিন করে, তবে আমরা ম্যানুয়ালি ফাইল ক্লোজ করে দিচ্ছি যাতে RAM সাথে সাথে ফ্রি হয়।
         try:
