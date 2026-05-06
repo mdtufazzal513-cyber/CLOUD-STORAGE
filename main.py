@@ -378,13 +378,22 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
         if file_size > MAX_ALLOWED_SIZE:
             return JSONResponse(status_code=400, content={"status": "error", "message": f"Upload aborted! Exceeds limit."})
 
-        # 🚀 Direct Pass-through: ডাবল সেভিং অফ! FastAPI's internal file directly passed to Pyrogram
-        setattr(file.file, "name", file.filename) # Pyrogram-কে ফাইলের নাম চেনানোর ট্রিক
+        # 🚀 Pyrogram-কে ধোঁকা দেওয়ার জন্য File Wrapper Class (যেহেতু SpooledTemporaryFile এর নাম চেঞ্জ করা যায় না)
+        class TelegramFileWrapper:
+            def __init__(self, file_obj, filename):
+                self.file_obj = file_obj
+                self.name = filename # Pyrogram এই নামটাই খুঁজবে
+            def read(self, *args): return self.file_obj.read(*args)
+            def seek(self, *args): return self.file_obj.seek(*args)
+            def tell(self, *args): return self.file_obj.tell(*args)
+            def close(self): pass # FastAPI নিজেই ক্লোজ করবে, তাই এখানে পাস করা হলো
+
+        wrapped_file = TelegramFileWrapper(file.file, file.filename)
 
         # ২. প্রাইমারি চ্যানেলে আপলোড (সরাসরি স্ট্রিম)
         sent_message = await client.send_document(
             chat_id=tg_cluster.primary_channel, 
-            document=file.file,
+            document=wrapped_file,
             file_name=file.filename
         )
         
