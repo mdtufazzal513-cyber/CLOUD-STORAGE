@@ -99,7 +99,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # 🚨 Server RAM Protection (Active Task Counter)
 active_tasks = 0
-MAX_ACTIVE_TASKS = 50 # 🚀 Direct Streaming এর কারণে সার্ভারে চাপ নেই, তাই একসাথে ৫০ জন আপলোড/ডাউনলোড করতে পারবে!
+MAX_ACTIVE_TASKS = 6 # ফ্রি সার্ভারের জন্য একসাথে ৬টি রিকোয়েস্ট নিরাপদ
 
 # --- 🚀 Smart Telegram Cluster Manager ---
 class TelegramCluster:
@@ -366,43 +366,34 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
             if not MAX_ALLOWED_SIZE: MAX_ALLOWED_SIZE = 500 * 1024 * 1024
         except Exception: MAX_ALLOWED_SIZE = 500 * 1024 * 1024
 
-        # 🚀 ১. ডিস্কে সেভ না করে সরাসরি সাইজ মাপা হচ্ছে
-        file.file.seek(0, os.SEEK_END)
-        file_size = file.file.tell()
-        file.file.seek(0) # পয়েন্টার শুরুতে আনা হলো
+        safe_filename = f"{uuid.uuid4().hex}_{file.filename.replace(' ', '_')}"
+        file_path = os.path.join(UPLOAD_DIR, safe_filename)
+        file_size = 0
+        
+        with open(file_path, "wb") as buffer:
+            while True:
+                chunk = await file.read(1024 * 1024) 
+                if not chunk: break
+                buffer.write(chunk)
+                file_size += len(chunk)
+                if file_size > MAX_ALLOWED_SIZE:
+                    buffer.close()
+                    os.remove(file_path)
+                    return JSONResponse(status_code=400, content={"status": "error", "message": f"Upload aborted! Exceeds limit."})
 
-        if file_size > MAX_ALLOWED_SIZE:
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Upload aborted! Exceeds limit."})
-
-        # ২. ডাইনামিক সেশন বাছাই করা
+        # ১. ডাইনামিক সেশন বাছাই করা
         client = tg_cluster.get_next_client()
         if not client: raise Exception("No Telegram sessions available!")
 
-        # 🚀 ৩. Pyrogram-কে ধোঁকা দেওয়ার জন্য স্মার্ট স্ট্রিম র‍্যাপার (কোনো setattr এরর খাবে না)
-        class StreamWrapper:
-            def __init__(self, f, name):
-                self._f = f
-                self._name = name
-            @property
-            def name(self): return self._name # SpooledTemporaryFile এর নাম এভাবে পাস করা হলো
-            def read(self, *args, **kwargs): return self._f.read(*args, **kwargs)
-            def seek(self, *args, **kwargs): return self._f.seek(*args, **kwargs)
-            def tell(self, *args, **kwargs): return self._f.tell(*args, **kwargs)
-
-        wrapped_stream = StreamWrapper(file.file, file.filename)
-
-        # ৪. প্রাইমারি চ্যানেলে আপলোড (সরাসরি স্ট্রিম)
-        sent_message = await client.send_document(
-            chat_id=tg_cluster.primary_channel, 
-            document=wrapped_stream,
-            file_name=file.filename
-        )
+        # ২. প্রাইমারি চ্যানেলে আপলোড
+        sent_message = await client.send_document(chat_id=tg_cluster.primary_channel, document=file_path)
         
         msg_ids = { "primary": sent_message.id, "backups": [] }
 
-        # ৫. ব্যাকআপ চ্যানেলগুলোতে ফরোয়ার্ড করা (Magic Copy Trick!)
+        # ৩. ব্যাকআপ চ্যানেলগুলোতে ফরোয়ার্ড করা (Magic Copy Trick!)
         for backup_id in tg_cluster.backup_channels:
             try:
+                # forward_messages এর বদলে copy_message ব্যবহার করা হলো। এটি ১০০% কাজ করবে এবং "Forwarded from" ট্যাগ থাকবে না।
                 fw_msg = await client.copy_message(chat_id=backup_id, from_chat_id=tg_cluster.primary_channel, message_id=sent_message.id)
                 msg_ids["backups"].append({"channel": backup_id, "msg_id": fw_msg.id})
             except Exception as e:
@@ -419,15 +410,9 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
         
     finally:
         active_tasks -= 1
-        # 🚀 ৬. কাজ শেষে ফাইল স্ট্রিম ক্লিন করে সার্ভারের RAM ফ্রি করে দেওয়া হলো
-        try: file.file.close()
-        except: pass
-
-        active_tasks -= 1
-        # 🚀 FastAPI নিজে থেকে মেমোরি ক্লিন করে, তবে আমরা ম্যানুয়ালি ফাইল ক্লোজ করে দিচ্ছি যাতে RAM সাথে সাথে ফ্রি হয়।
-        try:
-            file.file.close()
-        except: pass
+        if 'file_path' in locals() and os.path.exists(file_path):
+            try: os.remove(file_path)
+            except: pass
 
 # --- Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}/{file_name:path}")
@@ -518,13 +503,20 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
         if not files:
             return JSONResponse(status_code=400, content={"error": "No files found to zip"})
             
-        # Free Server Protection: 500 MB এর বেশি হলে জিপ বাতিল করা হবে
         total_size_bytes = sum(f.get("file_size", 0) for f in files)
-        MAX_ZIP_SIZE = 500 * 1024 * 1024 # 500 MB
         
+        # Database থেকে লিমিট আনা হচ্ছে (ফলব্যাক ৩০০ এমবি)
+        try:
+            zip_limit_ref = fb_db.reference('system_settings/max_zip_size')
+            db_zip_limit = zip_limit_ref.get()
+            MAX_ZIP_SIZE = int(db_zip_limit) if db_zip_limit else 300 * 1024 * 1024
+        except Exception:
+            MAX_ZIP_SIZE = 300 * 1024 * 1024 # Error Fallback 300 MB
+            
         if total_size_bytes > MAX_ZIP_SIZE:
+            display_limit = f"{MAX_ZIP_SIZE / (1024 * 1024 * 1024):.1f} GB" if MAX_ZIP_SIZE >= 1024 * 1024 * 1024 else f"{MAX_ZIP_SIZE / (1024 * 1024):.0f} MB"
             return JSONResponse(status_code=400, content={
-                "error": "Folder is too large (>500MB) to ZIP. Please open the folder and download files individually."
+                "error": f"Folder is too large (>{display_limit}) to ZIP. Please open the folder and download files individually."
             })
         
         # স্মার্ট ক্যাশিং: ফাইলের লিস্ট থেকে একটি ইউনিক হ্যাশ (MD5) তৈরি করা হচ্ছে
