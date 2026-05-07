@@ -93,25 +93,55 @@ ADMIN_UIDS = os.environ.get("ADMIN_UIDS", "")
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# 🚨 Server RAM Protection (Active Task Counter & Dynamic Cache)
+# 🚨 Dynamic Server Limits (Strictly Admin Controlled & Crash-Proof)
 active_tasks = 0
-MAX_ACTIVE_TASKS = 6 
+MAX_ACTIVE_TASKS = 6  # Initial temp fallback (Overwritten instantly by Admin DB)
 MAX_ZIP_SIZE = 300 * 1024 * 1024 
 MAX_UPLOAD_SIZE = 500 * 1024 * 1024 
 
-# 🚀 Bulletproof Async Loop to Sync Settings (Replaces crash-prone Firebase Listener)
-async def sync_settings_loop():
+# ডাটাবেস থেকে আসা ডাটা ভ্যালিডেট করার ফাংশন (যাতে 0 এসে সার্ভার ব্লক না করে দেয়)
+def update_global_limits(data_dict):
     global MAX_ACTIVE_TASKS, MAX_ZIP_SIZE, MAX_UPLOAD_SIZE
-    while True:
-        try:
-            settings = fb_db.reference('system_settings').get()
-            if settings and isinstance(settings, dict):
-                MAX_ACTIVE_TASKS = int(settings.get('max_active_tasks', MAX_ACTIVE_TASKS))
-                MAX_ZIP_SIZE = int(settings.get('max_zip_size', MAX_ZIP_SIZE))
-                MAX_UPLOAD_SIZE = int(settings.get('max_file_size', MAX_UPLOAD_SIZE))
-        except Exception as e:
-            pass
-        await asyncio.sleep(5) # প্রতি ৫ সেকেন্ড পর পর সার্ভার নিজে থেকে লিমিট চেক করবে
+    try:
+        if 'max_active_tasks' in data_dict:
+            val = int(data_dict['max_active_tasks'])
+            if val > 0: MAX_ACTIVE_TASKS = val
+        if 'max_zip_size' in data_dict:
+            val = int(data_dict['max_zip_size'])
+            if val > 0: MAX_ZIP_SIZE = val
+        if 'max_file_size' in data_dict:
+            val = int(data_dict['max_file_size'])
+            if val > 0: MAX_UPLOAD_SIZE = val
+    except Exception:
+        pass
+
+# 🚀 Real-time Listener (0 Quota Waste)
+def sync_system_settings(event):
+    global MAX_ACTIVE_TASKS, MAX_ZIP_SIZE, MAX_UPLOAD_SIZE
+    try:
+        if event.data is not None:
+            if isinstance(event.data, dict):
+                update_global_limits(event.data)
+            else:
+                val = int(event.data)
+                # 0 বা মাইনাস ভ্যালু সেট করলে সার্ভার ক্র্যাশ ঠেকাবে
+                if val > 0:
+                    if event.path == '/max_active_tasks': MAX_ACTIVE_TASKS = val
+                    elif event.path == '/max_zip_size': MAX_ZIP_SIZE = val
+                    elif event.path == '/max_file_size': MAX_UPLOAD_SIZE = val
+    except Exception:
+        pass
+
+try:
+    # ১. সার্ভার বুট হওয়ার সময় সরাসরি এডমিন প্যানেলের সেভ করা ডাটা টেনে নেবে
+    init_data = fb_db.reference('system_settings').get()
+    if isinstance(init_data, dict):
+        update_global_limits(init_data)
+    
+    # ২. এরপর লাইভ লিসেনার যুক্ত করবে
+    fb_db.reference('system_settings').listen(sync_system_settings)
+except Exception:
+    pass
 
 def decrease_active_tasks():
     global active_tasks
@@ -329,7 +359,6 @@ def cleanup_temp_folder():
 @app.on_event("startup")
 async def startup():
     cleanup_temp_folder() 
-    asyncio.create_task(sync_settings_loop()) # স্মার্ট লুপটি চালু করা হলো 
     
     try:
         admin_uids_str = ADMIN_UIDS
