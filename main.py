@@ -93,13 +93,53 @@ ADMIN_UIDS = os.environ.get("ADMIN_UIDS", "")
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+import threading
+
+# 🚨 Thread-Safe Task Tracker (১০০% লিমিট প্রোটেকশন)
+class TaskTracker:
+    def __init__(self):
+        self._active_tasks = 0
+        self._lock = threading.Lock()
+
+    def increment(self):
+        with self._lock:
+            self._active_tasks += 1
+            print(f"📈 Task Started. Active Tasks: {self._active_tasks}")
+
+    def decrement(self):
+        with self._lock:
+            if self._active_tasks > 0:
+                self._active_tasks -= 1
+                print(f"📉 Task Finished. Active Tasks remaining: {self._active_tasks}")
+
+    @property
+    def count(self):
+        with self._lock:
+            return self._active_tasks
+
+task_tracker = TaskTracker()
+
+class RequestTask:
+    def __init__(self):
+        self.done = False
+        self._lock = threading.Lock()
+    
+    def start(self):
+        with self._lock:
+            if not self.done:
+                task_tracker.increment()
+                
+    def end(self):
+        with self._lock:
+            if not self.done:
+                task_tracker.decrement()
+                self.done = True
+
 # 🚨 Dynamic Server Limits (Strictly Admin Controlled & Crash-Proof)
-active_tasks = 0
-MAX_ACTIVE_TASKS = 6  # Initial temp fallback (Overwritten instantly by Admin DB)
+MAX_ACTIVE_TASKS = 6
 MAX_ZIP_SIZE = 300 * 1024 * 1024 
 MAX_UPLOAD_SIZE = 500 * 1024 * 1024 
 
-# ডাটাবেস থেকে আসা ডাটা ভ্যালিডেট করার ফাংশন (যাতে 0 এসে সার্ভার ব্লক না করে দেয়)
 def update_global_limits(data_dict):
     global MAX_ACTIVE_TASKS, MAX_ZIP_SIZE, MAX_UPLOAD_SIZE
     try:
@@ -112,10 +152,8 @@ def update_global_limits(data_dict):
         if 'max_file_size' in data_dict:
             val = int(data_dict['max_file_size'])
             if val > 0: MAX_UPLOAD_SIZE = val
-    except Exception:
-        pass
+    except Exception: pass
 
-# 🚀 Real-time Listener (0 Quota Waste)
 def sync_system_settings(event):
     global MAX_ACTIVE_TASKS, MAX_ZIP_SIZE, MAX_UPLOAD_SIZE
     try:
@@ -124,30 +162,18 @@ def sync_system_settings(event):
                 update_global_limits(event.data)
             else:
                 val = int(event.data)
-                # 0 বা মাইনাস ভ্যালু সেট করলে সার্ভার ক্র্যাশ ঠেকাবে
                 if val > 0:
                     if event.path == '/max_active_tasks': MAX_ACTIVE_TASKS = val
                     elif event.path == '/max_zip_size': MAX_ZIP_SIZE = val
                     elif event.path == '/max_file_size': MAX_UPLOAD_SIZE = val
-    except Exception:
-        pass
+    except Exception: pass
 
 try:
-    # ১. সার্ভার বুট হওয়ার সময় সরাসরি এডমিন প্যানেলের সেভ করা ডাটা টেনে নেবে
     init_data = fb_db.reference('system_settings').get()
     if isinstance(init_data, dict):
         update_global_limits(init_data)
-    
-    # ২. এরপর লাইভ লিসেনার যুক্ত করবে
     fb_db.reference('system_settings').listen(sync_system_settings)
-except Exception:
-    pass
-
-def decrease_active_tasks():
-    global active_tasks
-    if active_tasks > 0:
-        active_tasks -= 1
-        print(f"📉 Task Finished. Active Tasks remaining: {active_tasks}")
+except Exception: pass
 
 # --- 🚀 Smart Telegram Cluster Manager ---
 class TelegramCluster:
@@ -391,6 +417,68 @@ async def ping_server():
 
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(verify_token)):
+    global MAX_ACTIVE_TASKS, MAX_UPLOAD_SIZE
+    
+    if task_tracker.count >= MAX_ACTIVE_TASKS:
+        return JSONResponse(status_code=503, content={"status": "error", "message": f"Server is busy. Max concurrent limit ({MAX_ACTIVE_TASKS}) reached."})
+    
+    req_task = RequestTask()
+    req_task.start()
+    
+    try:
+        if not tg_cluster.is_ready:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "Cluster not ready yet!"})
+
+        try:
+            m_data = fb_db.reference('system_settings/maintenance_mode').get()
+            if m_data and isinstance(m_data, dict) and m_data.get('status') == 'active':
+                return JSONResponse(status_code=403, content={"status": "error", "message": "Server is in maintenance mode!"})
+        except Exception: pass
+
+        MAX_ALLOWED_SIZE = MAX_UPLOAD_SIZE
+
+        safe_filename = f"{uuid.uuid4().hex}_{file.filename.replace(' ', '_')}"
+        file_path = os.path.join(UPLOAD_DIR, safe_filename)
+        file_size = 0
+        
+        with open(file_path, "wb") as buffer:
+            while True:
+                chunk = await file.read(1024 * 1024) 
+                if not chunk: break
+                buffer.write(chunk)
+                file_size += len(chunk)
+                if file_size > MAX_ALLOWED_SIZE:
+                    buffer.close()
+                    os.remove(file_path)
+                    return JSONResponse(status_code=400, content={"status": "error", "message": f"Upload aborted! Exceeds limit."})
+
+        client = tg_cluster.get_next_client()
+        if not client: raise Exception("No Telegram sessions available!")
+
+        sent_message = await client.send_document(chat_id=tg_cluster.primary_channel, document=file_path)
+        msg_ids = { "primary": sent_message.id, "backups": [] }
+
+        for backup_id in tg_cluster.backup_channels:
+            try:
+                fw_msg = await client.copy_message(chat_id=backup_id, from_chat_id=tg_cluster.primary_channel, message_id=sent_message.id)
+                msg_ids["backups"].append({"channel": backup_id, "msg_id": fw_msg.id})
+            except Exception as e:
+                print(f"⚠️ Copy to backup channel {backup_id} failed: {e}")
+
+        import json
+        message_id_payload = json.dumps(msg_ids)
+
+        return {"status": "success", "file_name": file.filename, "file_size": file_size, "message_id": message_id_payload}
+
+    except Exception as e:
+        print(f"!!! UPLOAD ERROR: {e} !!!")
+        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+        
+    finally:
+        req_task.end()
+        if 'file_path' in locals() and os.path.exists(file_path):
+            try: os.remove(file_path)
+            except: pass
     global active_tasks, MAX_ACTIVE_TASKS, MAX_UPLOAD_SIZE
     
     if active_tasks >= MAX_ACTIVE_TASKS:
@@ -461,6 +549,84 @@ async def upload_file(file: UploadFile = File(...), user_token: dict = Depends(v
 # --- Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}/{file_name:path}")
 async def download_file(message_id: str, file_name: str, request: Request, background_tasks: BackgroundTasks):
+    global MAX_ACTIVE_TASKS
+    
+    if task_tracker.count >= MAX_ACTIVE_TASKS:
+        return JSONResponse(status_code=503, content={"error": f"Server is busy. Max limit ({MAX_ACTIVE_TASKS}) reached."})
+    
+    req_task = RequestTask()
+    req_task.start()
+    
+    try:
+        client = tg_cluster.get_next_client()
+        if not client: raise Exception("No Telegram sessions available!")
+
+        targets = []
+        try:
+            payload = json.loads(urllib.parse.unquote(message_id))
+            targets.append((int(tg_cluster.primary_channel), int(payload.get("primary"))))
+            for b in payload.get("backups", []):
+                targets.append((int(b["channel"]), int(b["msg_id"])))
+        except Exception:
+            targets.append((int(tg_cluster.primary_channel), int(message_id)))
+
+        message = None
+        for chat_id, msg_id in targets:
+            try:
+                msg = await client.get_messages(chat_id=chat_id, message_ids=msg_id)
+                if msg and not getattr(msg, "empty", False) and getattr(msg, "media", None):
+                    message = msg
+                    break 
+            except Exception as e:
+                continue
+
+        if not message:
+            return JSONResponse(status_code=404, content={"error": "File totally lost! Not found in primary or any backup channels."})
+
+        media = message.document or message.video or message.photo
+        if not file_name or file_name.strip() == "": file_name = getattr(media, "file_name", f"file_{message.id}")
+        file_size = getattr(media, "file_size", 0)
+        mime_type = getattr(media, "mime_type", "application/octet-stream")
+
+        if file_size == 0: return JSONResponse(status_code=400, content={"error": "File size is 0 bytes"})
+
+        range_header = request.headers.get("Range")
+        start = 0; end = file_size - 1; status_code = 200
+        if range_header:
+            range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+            if range_match:
+                start = int(range_match.group(1))
+                end_str = range_match.group(2)
+                end = int(end_str) if end_str else file_size - 1
+                status_code = 206 
+
+        safe_ascii_name = file_name.encode('ascii', 'ignore').decode('ascii').replace('"', '').replace('\n', '')
+        if not safe_ascii_name: safe_ascii_name = f"file_{message.id}"
+        encoded_name = urllib.parse.quote(file_name)
+
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(end - start + 1),
+            "Content-Disposition": f'attachment; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}'
+        }
+
+        async def ranged_file_streamer():
+            try:
+                async for chunk in client.stream_media(message, offset=start, limit=(end - start + 1)):
+                    if await request.is_disconnected(): break
+                    yield chunk
+            except asyncio.CancelledError: pass
+            except Exception as e: print(f"Stream interrupted: {e}")
+            finally:
+                req_task.end()
+
+        background_tasks.add_task(req_task.end)
+        return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type, background=background_tasks)
+
+    except Exception as e:
+        req_task.end()
+        return JSONResponse(status_code=500, content={"error": f"Internal Error: {str(e)}"})
     global active_tasks, MAX_ACTIVE_TASKS
     
     if active_tasks >= MAX_ACTIVE_TASKS:
@@ -547,6 +713,90 @@ async def download_file(message_id: str, file_name: str, request: Request, backg
 
 @app.post("/prepare-zip")
 async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
+    global MAX_ACTIVE_TASKS, MAX_ZIP_SIZE
+    
+    if task_tracker.count >= MAX_ACTIVE_TASKS:
+        return JSONResponse(status_code=503, content={"error": f"Server is busy. Max limit ({MAX_ACTIVE_TASKS}) reached."})
+    
+    req_task = RequestTask()
+    req_task.start()
+    
+    try:
+        files = json.loads(files_data)
+        if not files:
+            return JSONResponse(status_code=400, content={"error": "No files found to zip"})
+            
+        total_size_bytes = sum(f.get("file_size", 0) for f in files)
+            
+        if total_size_bytes > MAX_ZIP_SIZE:
+            display_limit = f"{MAX_ZIP_SIZE / (1024 * 1024 * 1024):.1f} GB" if MAX_ZIP_SIZE >= 1024 * 1024 * 1024 else f"{MAX_ZIP_SIZE / (1024 * 1024):.0f} MB"
+            return JSONResponse(status_code=400, content={
+                "error": f"Folder is too large (>{display_limit}) to ZIP. Please open the folder and download files individually."
+            })
+        
+        payload_hash = hashlib.md5(files_data.encode('utf-8')).hexdigest()
+        safe_folder_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', folder_name)
+        unique_id = f"{safe_folder_name}_{payload_hash}"
+        
+        base_dir = os.path.abspath(UPLOAD_DIR)
+        zip_filename = f"{folder_name}.zip"
+        zip_filepath = os.path.join(base_dir, f"temp_zip_{unique_id}.zip")
+        encoded_name = urllib.parse.quote(zip_filename)
+
+        if os.path.exists(zip_filepath):
+            return JSONResponse(status_code=200, content={"status": "ready", "download_url": f"/download-ready-zip/{unique_id}/{encoded_name}"})
+            
+        temp_dir = os.path.join(base_dir, f"temp_folder_{unique_id}")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        client = tg_cluster.get_next_client()
+        for f in files:
+            raw_msg_id = str(f.get("message_id")) 
+            file_name = f.get("file_name")
+            path = f.get("path", "")
+            
+            targets = []
+            try:
+                payload = json.loads(urllib.parse.unquote(raw_msg_id))
+                targets.append((int(tg_cluster.primary_channel), int(payload.get("primary"))))
+                for b in payload.get("backups", []):
+                    targets.append((int(b["channel"]), int(b["msg_id"])))
+            except Exception:
+                targets.append((int(tg_cluster.primary_channel), int(raw_msg_id)))
+
+            message = None
+            for chat_id, m_id in targets:
+                try:
+                    msg = await client.get_messages(chat_id=chat_id, message_ids=m_id)
+                    if msg and getattr(msg, "media", None):
+                        message = msg
+                        break
+                except Exception: continue
+            
+            if message:
+                safe_file_name = os.path.basename(file_name)
+                save_dir = os.path.join(temp_dir, path)
+                os.makedirs(save_dir, exist_ok=True)
+                save_path = os.path.abspath(os.path.join(save_dir, safe_file_name))
+                try: await client.download_media(message, file_name=save_path)
+                except Exception: continue
+        
+        await asyncio.to_thread(shutil.make_archive, zip_filepath.replace('.zip', ''), 'zip', temp_dir)
+        
+        if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+            
+        async def delete_later():
+            await asyncio.sleep(600)
+            if os.path.exists(zip_filepath): os.remove(zip_filepath)
+        asyncio.create_task(delete_later())
+        
+        encoded_name = urllib.parse.quote(zip_filename)
+        return JSONResponse(status_code=200, content={"status": "ready", "download_url": f"/download-ready-zip/{unique_id}/{encoded_name}"})
+        
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        req_task.end()
     global active_tasks, MAX_ACTIVE_TASKS, MAX_ZIP_SIZE
     
     if active_tasks >= MAX_ACTIVE_TASKS:
@@ -657,6 +907,28 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
 
 @app.get("/download-ready-zip/{zip_id}/{file_name:path}")
 async def download_ready_zip(zip_id: str, file_name: str, background_tasks: BackgroundTasks):
+    global MAX_ACTIVE_TASKS
+    
+    if task_tracker.count >= MAX_ACTIVE_TASKS:
+        return JSONResponse(status_code=503, content={"error": "Server is busy. Max concurrent limit reached."})
+    
+    zip_filepath = os.path.join(UPLOAD_DIR, f"temp_zip_{zip_id}.zip")
+    
+    if not os.path.exists(zip_filepath):
+        return JSONResponse(status_code=404, content={"error": "ZIP file expired or not found"})
+        
+    req_task = RequestTask()
+    req_task.start()
+    
+    background_tasks.add_task(req_task.end)
+    
+    return FileResponse(
+        path=zip_filepath, 
+        filename=urllib.parse.unquote(file_name), 
+        media_type="application/zip",
+        headers={"Accept-Ranges": "bytes"},
+        background=background_tasks
+    )
     global active_tasks, MAX_ACTIVE_TASKS
     
     if active_tasks >= MAX_ACTIVE_TASKS:
