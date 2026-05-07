@@ -9,6 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping Main Server
-        run: curl -s /ping
+        run: curl -s https://cloud-storage-k2my.onrender.com/ping
       - name: Ping Dummy Server
         run: curl -s https://cloud-storage-ozsx.onrender.com/ping
