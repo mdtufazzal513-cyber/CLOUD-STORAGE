@@ -1,0 +1,14 @@
+name: Keep Render Alive
+
+on:
+  schedule:
+    - cron: "*/5 * * * *" # প্রতি ৫ মিনিট পরপর রান করবে
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Main Server
+        run: curl -s /ping
+      - name: Ping Dummy Server
+        run: curl -s https://cloud-storage-ozsx.onrender.com/ping
