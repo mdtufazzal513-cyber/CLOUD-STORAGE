@@ -95,22 +95,23 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # 🚨 Server RAM Protection (Active Task Counter & Dynamic Cache)
 active_tasks = 0
-MAX_ACTIVE_TASKS = 6 # ফ্রি সার্ভারের জন্য একসাথে ৬টি রিকোয়েস্ট নিরাপদ
-MAX_ZIP_SIZE = 300 * 1024 * 1024 # Fallback
-MAX_UPLOAD_SIZE = 500 * 1024 * 1024 # Fallback
+MAX_ACTIVE_TASKS = 6 
+MAX_ZIP_SIZE = 300 * 1024 * 1024 
+MAX_UPLOAD_SIZE = 500 * 1024 * 1024 
 
-# ফায়ারবেস থেকে লাইভ কনফিগ ক্যাশ করার জন্য রিয়েলটাইম লিসেনার (ডাটাবেস ব্লকিং এড়ানোর জন্য)
-def sync_system_settings(event):
+# 🚀 Bulletproof Async Loop to Sync Settings (Replaces crash-prone Firebase Listener)
+async def sync_settings_loop():
     global MAX_ACTIVE_TASKS, MAX_ZIP_SIZE, MAX_UPLOAD_SIZE
-    if event.data:
-        MAX_ACTIVE_TASKS = int(event.data.get('max_active_tasks', 6))
-        MAX_ZIP_SIZE = int(event.data.get('max_zip_size', 300 * 1024 * 1024))
-        MAX_UPLOAD_SIZE = int(event.data.get('max_file_size', 500 * 1024 * 1024))
-
-try:
-    fb_db.reference('system_settings').listen(sync_system_settings)
-except Exception as e:
-    print(f"Warning: Settings listener failed - {e}")
+    while True:
+        try:
+            settings = fb_db.reference('system_settings').get()
+            if settings and isinstance(settings, dict):
+                MAX_ACTIVE_TASKS = int(settings.get('max_active_tasks', MAX_ACTIVE_TASKS))
+                MAX_ZIP_SIZE = int(settings.get('max_zip_size', MAX_ZIP_SIZE))
+                MAX_UPLOAD_SIZE = int(settings.get('max_file_size', MAX_UPLOAD_SIZE))
+        except Exception as e:
+            pass
+        await asyncio.sleep(5) # প্রতি ৫ সেকেন্ড পর পর সার্ভার নিজে থেকে লিমিট চেক করবে
 
 def decrease_active_tasks():
     global active_tasks
@@ -328,6 +329,7 @@ def cleanup_temp_folder():
 @app.on_event("startup")
 async def startup():
     cleanup_temp_folder() 
+    asyncio.create_task(sync_settings_loop()) # স্মার্ট লুপটি চালু করা হলো 
     
     try:
         admin_uids_str = ADMIN_UIDS
