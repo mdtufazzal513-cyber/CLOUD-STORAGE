@@ -50,9 +50,8 @@ from typing import List, Any
 class BulkDeleteRequest(BaseModel):
     message_ids: List[Any]
 
-# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Android Download Manager multiple thread support)
-MAX_CONCURRENT_DOWNLOADS = 40  # ভিডিও স্ট্রিমিংয়ের জন্য এটি বাড়ানো হলো, কারণ একটি ভিডিও প্লেয়ার একসাথে ৩-৪টি কানেকশন তৈরি করে
-download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+# Video streaming requires unlimited concurrency. Semaphore removed for superfast speed.
+MESSAGE_CACHE = {} # 🚀 Blazing Fast Cache System
 
 app = FastAPI()
 
@@ -460,34 +459,38 @@ async def upload_file(request: Request, file: UploadFile = File(...), user_token
 # --- Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}/{file_name:path}")
 async def download_file(message_id: str, file_name: str, request: Request):
-    # ভিডিও স্ট্রিমিংয়ের জন্য গ্লোবাল active_tasks ব্লক সরানো হলো। 
-    # কারণ ভিডিও প্লেয়ার অটোমেটিক্যালি একসাথে একাধিক রেঞ্জ রিকোয়েস্ট (Range Request) পাঠায়।
     try:
         client = tg_cluster.get_next_client()
         if not client: raise Exception("No Telegram sessions available!")
 
         # Parse new multi-channel payload (JSON) and fallback legacy ID
-        targets = []
+        targets =[]
         try:
             payload = json.loads(urllib.parse.unquote(message_id))
-            # 🚨 ইন্টিজার (int) কাস্টিং করা হলো, নাহলে Pyrogram এরর দেবে
             targets.append((int(tg_cluster.primary_channel), int(payload.get("primary"))))
-            for b in payload.get("backups", []):
+            for b in payload.get("backups",[]):
                 targets.append((int(b["channel"]), int(b["msg_id"])))
         except Exception:
             targets.append((int(tg_cluster.primary_channel), int(message_id)))
 
         message = None
-        # 🚨 Smart Round-Robin Fallback: প্রাইমারি ফেইল করলে ব্যাকআপগুলো চেক করবে
-        for chat_id, msg_id in targets:
-            try:
-                msg = await client.get_messages(chat_id=chat_id, message_ids=msg_id)
-                if msg and not getattr(msg, "empty", False) and getattr(msg, "media", None):
-                    message = msg
-                    break # ফাইল পাওয়া গেছে! লুপ ব্রেক।
-            except Exception as e:
-                print(f"⚠️ Fallback Active: Failed in {chat_id}, trying next... Error: {e}")
-                continue
+        
+        # 🚀 Superfast Cache: Bypasses Telegram API call (get_messages) for subsequent range requests!
+        cache_key = f"{id(client)}_{message_id}"
+        if len(MESSAGE_CACHE) > 1000: MESSAGE_CACHE.clear() # Prevent memory leak
+        
+        if cache_key in MESSAGE_CACHE and (time.time() - MESSAGE_CACHE[cache_key]['time']) < 600:
+            message = MESSAGE_CACHE[cache_key]['msg']
+        else:
+            for chat_id, msg_id in targets:
+                try:
+                    msg = await client.get_messages(chat_id=chat_id, message_ids=msg_id)
+                    if msg and not getattr(msg, "empty", False) and getattr(msg, "media", None):
+                        message = msg
+                        MESSAGE_CACHE[cache_key] = {'msg': msg, 'time': time.time()}
+                        break 
+                except Exception as e:
+                    continue
 
         if not message:
             return JSONResponse(status_code=404, content={"error": "File totally lost! Not found in primary or any backup channels."})
@@ -518,22 +521,25 @@ async def download_file(message_id: str, file_name: str, request: Request):
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
-            "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}'
+            "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
+            "Cache-Control": "public, max-age=86400" # 🚀 ব্রাউজার ক্যাশিং (ছবি ও ভিডিও দ্বিতীয়বার লোড হবে চোখের পলকে)
         }
 
         async def ranged_file_streamer():
-            async with download_semaphore: 
-                try:
-                    async for chunk in client.stream_media(message, offset=start, limit=(end - start + 1)):
-                        if await request.is_disconnected(): break
-                        yield chunk
-                except asyncio.CancelledError: pass
-                except Exception as e: print(f"Stream interrupted: {e}")
+            try:
+                # 🚀 Semaphore রিমুভ করা হয়েছে যাতে ভিডিও বাফারিং একটুও না আটকায়
+                async for chunk in client.stream_media(message, offset=start, limit=(end - start + 1)):
+                    if await request.is_disconnected(): break
+                    yield chunk
+            except asyncio.CancelledError: 
+                pass
+            except Exception as e: 
+                pass # ব্রাউজার কানেকশন কেটে দিলে কোনো এরর দেখানোর প্রয়োজন নেই
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"Internal Error: {str(e)}"})
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/prepare-zip")
 async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
