@@ -460,13 +460,11 @@ async def upload_file(request: Request, file: UploadFile = File(...), user_token
 @app.get("/download/{message_id}/{file_name:path}")
 async def download_file(message_id: str, file_name: str, request: Request):
     try:
-        if not tg_cluster.clients: raise Exception("No Telegram sessions available!")
-
-        # 🚀 SMART TECHNIQUE 1: Bot Stickiness (Consistent Hashing)
-        # একই ভিডিওর সবগুলো খণ্ড (chunks) একই বটের মাধ্যমে যাবে, ফলে Telegram স্প্যাম ভেবে ব্লক করবে না।
-        hash_val = sum(ord(c) for c in message_id)
-        client_index = hash_val % len(tg_cluster.clients)
-        client = tg_cluster.clients[client_index]
+        # 🚀 100% FOOLPROOF TECHNIQUE 1: Round-Robin Load Balancing
+        # ব্রাউজার একসাথে ৩-৪ টি রিকোয়েস্ট পাঠালে সেগুলো আলাদা আলাদা বটের কাছে যাবে। 
+        # ফলে টেলিগ্রাম লিমিটেশন (FloodWait) এড়াবে।
+        client = tg_cluster.get_next_client()
+        if not client: raise Exception("No Telegram sessions available!")
 
         targets =[]
         try:
@@ -479,11 +477,12 @@ async def download_file(message_id: str, file_name: str, request: Request):
 
         message = None
         
-        # 🚀 Superfast Cache: Bypasses Telegram API call (get_messages)
+        # 🚀 FOOLPROOF TECHNIQUE 2: Bot-Specific Instant Memory Cache 
+        # প্রত্যেকটি বটের জন্য আলাদা ক্যাশ, যাতে FileReferenceExpired এরর না আসে।
         cache_key = f"{id(client)}_{message_id}"
-        if len(MESSAGE_CACHE) > 1000: MESSAGE_CACHE.clear() # Prevent memory leak
+        if len(MESSAGE_CACHE) > 2000: MESSAGE_CACHE.clear()
         
-        if cache_key in MESSAGE_CACHE and (time.time() - MESSAGE_CACHE[cache_key]['time']) < 600:
+        if cache_key in MESSAGE_CACHE and (time.time() - MESSAGE_CACHE[cache_key]['time']) < 3600:
             message = MESSAGE_CACHE[cache_key]['msg']
         else:
             for chat_id, msg_id in targets:
@@ -497,72 +496,88 @@ async def download_file(message_id: str, file_name: str, request: Request):
                     continue
 
         if not message:
-            return JSONResponse(status_code=404, content={"error": "File totally lost! Not found in channels."})
+            return JSONResponse(status_code=404, content={"error": "File lost from cloud."})
 
-        media = message.document or message.video or message.photo
+        media = message.document or message.video or message.photo or message.audio
         if not file_name or file_name.strip() == "": file_name = getattr(media, "file_name", f"file_{message.id}")
         file_size = getattr(media, "file_size", 0)
         mime_type = getattr(media, "mime_type", "application/octet-stream")
 
         if file_size == 0: return JSONResponse(status_code=400, content={"error": "File size is 0 bytes"})
 
+        # 🚀 FOOLPROOF TECHNIQUE 3: Strict Safari/iOS Video Header Fix
+        # অ্যাপল ডিভাইস বা ব্রাউজারে 206 স্ট্যাটাস ছাড়া ভিডিও প্লে হয় না। তাই সব সময় Range লজিক ফোর্স করা হলো।
         range_header = request.headers.get("Range")
-        start = 0; end = file_size - 1; status_code = 200
+        start = 0
+        end = file_size - 1
+        status_code = 206 # Always default to 206 for robust media streaming
+
         if range_header:
             range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
             if range_match:
                 start = int(range_match.group(1))
                 end_str = range_match.group(2)
-                end = int(end_str) if end_str else file_size - 1
-                status_code = 206 
+                if end_str:
+                    end = int(end_str)
+
+        # Ensure boundaries are correct
+        if start >= file_size:
+            return JSONResponse(status_code=416, content={"error": "Requested Range Not Satisfiable"}, headers={"Content-Range": f"bytes */{file_size}"})
+        
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
 
         safe_ascii_name = file_name.encode('ascii', 'ignore').decode('ascii').replace('"', '').replace('\n', '')
         if not safe_ascii_name: safe_ascii_name = f"file_{message.id}"
         encoded_name = urllib.parse.quote(file_name)
 
         disp_type = "inline" if request.query_params.get("inline") == "true" else "attachment"
+        
         headers = {
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Accept-Ranges": "bytes",
-            "Content-Length": str(end - start + 1),
+            "Content-Length": str(content_length),
             "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
-            "Cache-Control": "public, max-age=86400"
+            "Cache-Control": "public, max-age=86400",
+            "Content-Type": mime_type
         }
 
+        # 🚀 FOOLPROOF TECHNIQUE 4: Invincible Auto-Resume Streamer
+        # মাঝপথে টেলিগ্রাম কানেকশন ড্রপ করলে ব্রাউজারকে বুঝতে না দিয়ে রিকানেক্ট করে বাকি ডাটা টানবে!
         async def ranged_file_streamer():
-            # 🚀 SMART TECHNIQUE 2: Auto-Recovery Chunk Buffer
-            # Telegram মাঝপথে কানেকশন ড্রপ করলে ব্রাউজার এরর দেওয়ার আগেই সার্ভার রিকানেক্ট করে বাকি অংশ প্লে করবে!
             current_offset = start
-            bytes_remaining = (end - start + 1)
-            max_retries = 3
+            limit = content_length
+            yielded_bytes = 0
+            max_retries = 5 # ৫ বার পর্যন্ত রিকানেক্ট করার চেষ্টা করবে
 
-            for attempt in range(max_retries):
+            while yielded_bytes < limit:
                 try:
-                    async for chunk in client.stream_media(message, offset=current_offset, limit=bytes_remaining):
-                        if await request.is_disconnected(): 
+                    async for chunk in client.stream_media(message, offset=current_offset, limit=(limit - yielded_bytes)):
+                        if await request.is_disconnected():
                             return
                         yield chunk
-                        chunk_len = len(chunk)
-                        current_offset += chunk_len
-                        bytes_remaining -= chunk_len
+                        chunk_size = len(chunk)
+                        current_offset += chunk_size
+                        yielded_bytes += chunk_size
                         
-                        if bytes_remaining <= 0:
-                            return
-                    
-                    # যদি সফলভাবে পুরো বাফার দেওয়া শেষ হয়
-                    if bytes_remaining <= 0:
+                    # লুপ নরমালি শেষ হলে মানে ডাটা দেওয়া শেষ
+                    if yielded_bytes >= limit:
                         break
+                        
                 except asyncio.CancelledError:
-                    return # ব্রাউজার কানেকশন ক্লোজ করলে ক্লিন ভাবে বের হয়ে যাবে
+                    return # ইউজার নিজে কেটে দিলে
                 except Exception as e:
-                    if attempt == max_retries - 1:
-                        break # ৩ বার চেষ্টা করেও ফেইল হলে বের হয়ে যাবে
-                    await asyncio.sleep(0.5) # আধা সেকেন্ড অপেক্ষা করে আবার রিকানেক্ট করবে
+                    max_retries -= 1
+                    if max_retries <= 0:
+                        break
+                    await asyncio.sleep(1) # ১ সেকেন্ড অপেক্ষা করে আবার টেলিগ্রাম সার্ভারে হিট করবে
+                    continue
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/prepare-zip")
 async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
     try:
