@@ -460,10 +460,14 @@ async def upload_file(request: Request, file: UploadFile = File(...), user_token
 @app.get("/download/{message_id}/{file_name:path}")
 async def download_file(message_id: str, file_name: str, request: Request):
     try:
-        client = tg_cluster.get_next_client()
-        if not client: raise Exception("No Telegram sessions available!")
+        if not tg_cluster.clients: raise Exception("No Telegram sessions available!")
 
-        # Parse new multi-channel payload (JSON) and fallback legacy ID
+        # 🚀 SMART TECHNIQUE 1: Bot Stickiness (Consistent Hashing)
+        # একই ভিডিওর সবগুলো খণ্ড (chunks) একই বটের মাধ্যমে যাবে, ফলে Telegram স্প্যাম ভেবে ব্লক করবে না।
+        hash_val = sum(ord(c) for c in message_id)
+        client_index = hash_val % len(tg_cluster.clients)
+        client = tg_cluster.clients[client_index]
+
         targets =[]
         try:
             payload = json.loads(urllib.parse.unquote(message_id))
@@ -475,7 +479,7 @@ async def download_file(message_id: str, file_name: str, request: Request):
 
         message = None
         
-        # 🚀 Superfast Cache: Bypasses Telegram API call (get_messages) for subsequent range requests!
+        # 🚀 Superfast Cache: Bypasses Telegram API call (get_messages)
         cache_key = f"{id(client)}_{message_id}"
         if len(MESSAGE_CACHE) > 1000: MESSAGE_CACHE.clear() # Prevent memory leak
         
@@ -489,11 +493,11 @@ async def download_file(message_id: str, file_name: str, request: Request):
                         message = msg
                         MESSAGE_CACHE[cache_key] = {'msg': msg, 'time': time.time()}
                         break 
-                except Exception as e:
+                except Exception:
                     continue
 
         if not message:
-            return JSONResponse(status_code=404, content={"error": "File totally lost! Not found in primary or any backup channels."})
+            return JSONResponse(status_code=404, content={"error": "File totally lost! Not found in channels."})
 
         media = message.document or message.video or message.photo
         if not file_name or file_name.strip() == "": file_name = getattr(media, "file_name", f"file_{message.id}")
@@ -522,25 +526,43 @@ async def download_file(message_id: str, file_name: str, request: Request):
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
             "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
-            "Cache-Control": "public, max-age=86400" # 🚀 ব্রাউজার ক্যাশিং (ছবি ও ভিডিও দ্বিতীয়বার লোড হবে চোখের পলকে)
+            "Cache-Control": "public, max-age=86400"
         }
 
         async def ranged_file_streamer():
-            try:
-                # 🚀 Semaphore রিমুভ করা হয়েছে যাতে ভিডিও বাফারিং একটুও না আটকায়
-                async for chunk in client.stream_media(message, offset=start, limit=(end - start + 1)):
-                    if await request.is_disconnected(): break
-                    yield chunk
-            except asyncio.CancelledError: 
-                pass
-            except Exception as e: 
-                pass # ব্রাউজার কানেকশন কেটে দিলে কোনো এরর দেখানোর প্রয়োজন নেই
+            # 🚀 SMART TECHNIQUE 2: Auto-Recovery Chunk Buffer
+            # Telegram মাঝপথে কানেকশন ড্রপ করলে ব্রাউজার এরর দেওয়ার আগেই সার্ভার রিকানেক্ট করে বাকি অংশ প্লে করবে!
+            current_offset = start
+            bytes_remaining = (end - start + 1)
+            max_retries = 3
+
+            for attempt in range(max_retries):
+                try:
+                    async for chunk in client.stream_media(message, offset=current_offset, limit=bytes_remaining):
+                        if await request.is_disconnected(): 
+                            return
+                        yield chunk
+                        chunk_len = len(chunk)
+                        current_offset += chunk_len
+                        bytes_remaining -= chunk_len
+                        
+                        if bytes_remaining <= 0:
+                            return
+                    
+                    # যদি সফলভাবে পুরো বাফার দেওয়া শেষ হয়
+                    if bytes_remaining <= 0:
+                        break
+                except asyncio.CancelledError:
+                    return # ব্রাউজার কানেকশন ক্লোজ করলে ক্লিন ভাবে বের হয়ে যাবে
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        break # ৩ বার চেষ্টা করেও ফেইল হলে বের হয়ে যাবে
+                    await asyncio.sleep(0.5) # আধা সেকেন্ড অপেক্ষা করে আবার রিকানেক্ট করবে
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
 @app.post("/prepare-zip")
 async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
     try:
