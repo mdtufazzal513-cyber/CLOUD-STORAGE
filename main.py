@@ -516,11 +516,12 @@ async def download_file(message_id: str, file_name: str, request: Request):
         if not safe_ascii_name: safe_ascii_name = f"file_{message.id}"
         encoded_name = urllib.parse.quote(file_name)
 
+        disp_type = "inline" if request.query_params.get("inline") == "true" else "attachment"
         headers = {
             "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
-            "Content-Disposition": f'attachment; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}'
+            "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}'
         }
 
         async def ranged_file_streamer():
