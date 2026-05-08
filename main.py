@@ -51,7 +51,7 @@ class BulkDeleteRequest(BaseModel):
     message_ids: List[Any]
 
 # সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Android Download Manager multiple thread support)
-MAX_CONCURRENT_DOWNLOADS = 15
+MAX_CONCURRENT_DOWNLOADS = 40  # ভিডিও স্ট্রিমিংয়ের জন্য এটি বাড়ানো হলো, কারণ একটি ভিডিও প্লেয়ার একসাথে ৩-৪টি কানেকশন তৈরি করে
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
@@ -460,11 +460,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), user_token
 # --- Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}/{file_name:path}")
 async def download_file(message_id: str, file_name: str, request: Request):
-    global active_tasks
-    if active_tasks >= MAX_ACTIVE_TASKS:
-        return JSONResponse(status_code=503, content={"error": "Server is busy. Please wait a moment."})
-    
-    active_tasks += 1
+    # ভিডিও স্ট্রিমিংয়ের জন্য গ্লোবাল active_tasks ব্লক সরানো হলো। 
+    # কারণ ভিডিও প্লেয়ার অটোমেটিক্যালি একসাথে একাধিক রেঞ্জ রিকোয়েস্ট (Range Request) পাঠায়।
     try:
         client = tg_cluster.get_next_client()
         if not client: raise Exception("No Telegram sessions available!")
@@ -537,8 +534,6 @@ async def download_file(message_id: str, file_name: str, request: Request):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Internal Error: {str(e)}"})
-    finally:
-        active_tasks -= 1
 
 @app.post("/prepare-zip")
 async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
