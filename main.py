@@ -533,40 +533,41 @@ async def download_file(message_id: str, file_name: str, request: Request):
             "Accept-Ranges": "bytes",
             "Content-Length": str(content_length),
             "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
-            "Cache-Control": "public, max-age=86400",
-            "Content-Type": mime_type
+            "Cache-Control": "public, max-age=2592000, immutable", # ৩ দিনের জন্য ব্রাউজার ক্যাশ করবে
+            "Content-Type": mime_type,
+            "X-Content-Type-Options": "nosniff"
         }
 
-        # 🚀 FOOLPROOF TECHNIQUE 4: Ultra-Fast Auto-Resume Streamer
+        # 🚀 ULTRA-OPTIMIZED STREAMER: Smooth Video & Fast Image Loading
         async def ranged_file_streamer():
             nonlocal client, message
             current_offset = start
             limit = content_length
             yielded_bytes = 0
-            max_retries = 15 # দ্রুত রিকানেক্ট করবে, তাই ট্রাই লিমিট একটু বাড়িয়ে ১৫ করা হলো
+            max_retries = 20 
+            chunk_size_limit = 1024 * 1024 # 1MB chunks for stability
 
             while yielded_bytes < limit and max_retries > 0:
                 try:
-                    stream = client.stream_media(message, offset=current_offset, limit=(limit - yielded_bytes))
-                    if hasattr(stream, "__aiter__"):
-                        stream_iterator = stream.__aiter__()
-                    else:
-                        stream_iterator = stream
-                    
-                    while True:
+                    # offset এবং limit হ্যান্ডেল করার সময় Pyrogram এর স্ট্রিমিং অপ্টিমাইজ করা হয়েছে
+                    async for chunk in client.stream_media(message, offset=current_offset, limit=(limit - yielded_bytes)):
                         if await request.is_disconnected():
                             return
-                            
-                        # 🔥 ULTRA-FAST ANTI-FREEZE: ৩ সেকেন্ড ডাটা না পেলেই সাথে সাথে রিকানেক্ট করবে!
-                        chunk = await asyncio.wait_for(stream_iterator.__anext__(), timeout=3.0)
-                        yield chunk
                         
-                        chunk_size = len(chunk)
-                        current_offset += chunk_size
-                        yielded_bytes += chunk_size
+                        yield chunk
+                        chunk_len = len(chunk)
+                        current_offset += chunk_len
+                        yielded_bytes += chunk_len
                         
                         if yielded_bytes >= limit:
                             break
+                            
+                except (asyncio.TimeoutError, Exception) as e:
+                    max_retries -= 1
+                    await asyncio.sleep(0.2)
+                    # অটোমেটিক নতুন বট সেশন ট্রাই করবে যদি সেশন জ্যাম হয়ে যায়
+                    client = tg_cluster.get_next_client()
+                    continue
                             
                     if yielded_bytes >= limit:
                         break
