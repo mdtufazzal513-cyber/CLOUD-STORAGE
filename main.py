@@ -543,44 +543,44 @@ async def download_file(message_id: str, file_name: str, request: Request):
 
         disp_type = "inline" if request.query_params.get("inline") == "true" else "attachment"
         
-            headers = {
-        "Content-Range": f"bytes {start}-{end}/{file_size}",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(content_length),
-        "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
-        "Cache-Control": "no-cache" if range_header else "public, max-age=86400",
-        "Content-Type": mime_type,
-        "X-Content-Type-Options": "nosniff",
-        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges"
-    }
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(content_length),
+            "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
+            "Cache-Control": "no-cache" if range_header else "public, max-age=86400",
+            "Content-Type": mime_type,
+            "X-Content-Type-Options": "nosniff",
+            "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges"
+        }
 
-            # 🚀 ULTRA-STABLE STREAMER: Fixed Client, Optimized Chunks, Clean Exit
-    async def ranged_file_streamer():
-        nonlocal client, message
-        current_offset = start
-        remaining_bytes = content_length
-        chunk_size = 1048576  # 1MB chunk size for smooth video seeking & less stuttering
+        # 🚀 ULTRA-STABLE STREAMER: Fixed Client, Optimized Chunks, Clean Exit
+        async def ranged_file_streamer():
+            nonlocal client, message
+            current_offset = start
+            remaining_bytes = content_length
+            chunk_size = 1048576  # 1MB chunk size for smooth video seeking & less stuttering
 
-        while remaining_bytes > 0:
-            if await request.is_disconnected():
-                return
+            while remaining_bytes > 0:
+                if await request.is_disconnected():
+                    return
 
-            fetch_size = min(chunk_size, remaining_bytes)
+                fetch_size = min(chunk_size, remaining_bytes)
 
-            try:
-                async for chunk in client.stream_media(message, offset=current_offset, limit=fetch_size):
-                    if await request.is_disconnected():
-                        return
-                    yield chunk
-                    c_len = len(chunk)
-                    current_offset += c_len
-                    remaining_bytes -= c_len
-                    if remaining_bytes <= 0:
-                        break
-            except Exception as stream_err:
-                # Stream interrupted, break loop. Browser will retry with new Range if needed.
-                print(f"⚠️ Stream chunk error at offset {current_offset}: {stream_err}")
-                break
+                try:
+                    async for chunk in client.stream_media(message, offset=current_offset, limit=fetch_size):
+                        if await request.is_disconnected():
+                            return
+                        yield chunk
+                        c_len = len(chunk)
+                        current_offset += c_len
+                        remaining_bytes -= c_len
+                        if remaining_bytes <= 0:
+                            break
+                except Exception as stream_err:
+                    # Stream interrupted, break loop. Browser will retry with new Range if needed.
+                    print(f"⚠️ Stream chunk error at offset {current_offset}: {stream_err}")
+                    break
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
