@@ -456,15 +456,15 @@ async def upload_file(request: Request, file: UploadFile = File(...), user_token
             try: os.remove(file_path)
             except: pass
 
-# --- Resumable Download System (Pause/Resume Support) ---
+# --- Resumable Download System (Pause/Resume Support & RAM Optimized) ---
 @app.get("/download/{message_id}/{file_name:path}")
-async def download_file(message_id: str, file_name: str, request: Request):
+async def download_file(message_id: str, file_name: str, request: Request, background_tasks: BackgroundTasks):
     try:
-        # 🚀 100% FOOLPROOF TECHNIQUE 1: Round-Robin Load Balancing
+        # 🚀 1. Round-Robin Load Balancing
         client = tg_cluster.get_next_client()
         if not client: raise Exception("No Telegram sessions available!")
 
-        targets =[]
+        targets = []
         try:
             payload = json.loads(urllib.parse.unquote(message_id))
             targets.append((int(tg_cluster.primary_channel), int(payload.get("primary"))))
@@ -475,10 +475,12 @@ async def download_file(message_id: str, file_name: str, request: Request):
 
         message = None
         
-        # 🚀 FOOLPROOF TECHNIQUE 2: Bot-Specific Instant Memory Cache 
+        # 🧹 RAM Fix: Cache cleanup (Prevent Memory Leak)
         cache_key = f"{id(client)}_{message_id}"
-        if len(MESSAGE_CACHE) > 2000: MESSAGE_CACHE.clear()
-        
+        if len(MESSAGE_CACHE) > 2000: 
+            MESSAGE_CACHE.clear()
+            import gc; gc.collect() # Force Garbage Collection
+            
         if cache_key in MESSAGE_CACHE and (time.time() - MESSAGE_CACHE[cache_key]['time']) < 3600:
             message = MESSAGE_CACHE[cache_key]['msg']
         else:
@@ -499,35 +501,29 @@ async def download_file(message_id: str, file_name: str, request: Request):
         if not file_name or file_name.strip() == "": file_name = getattr(media, "file_name", f"file_{message.id}")
         file_size = getattr(media, "file_size", 0)
         
-        # 🚨 SMART MIME-TYPE HIJACKING (Forced Browser Support) 🚨
+        # 🚀 2. Strict MIME Type Detection
         import mimetypes
         guessed_type, _ = mimetypes.guess_type(file_name)
         mime_type = guessed_type or getattr(media, "mime_type", "application/octet-stream")
         
-        # 🚨 FIX: MKV/AVI seek error fix. Forcing MKV to MP4 breaks the browser's index-based byte calculation!
         lower_name = file_name.lower()
-        if lower_name.endswith('.mp4'):
-            mime_type = "video/mp4"
-        elif lower_name.endswith('.mkv'):
-            mime_type = "video/webm" # Browser handles mkv better as webm for seeking
-        elif lower_name.endswith('.mov'):
-            mime_type = "video/quicktime"
-        elif lower_name.endswith('.avi'):
-            mime_type = "video/x-msvideo"
-        elif lower_name.endswith(('.jpg', '.jpeg', '.png', '.webp')):
-            mime_type = f"image/{lower_name.split('.')[-1].replace('jpg', 'jpeg')}"
-        elif lower_name.endswith('.pdf'):
-            mime_type = "application/pdf"
-        elif lower_name.endswith(('.mp3', '.m4a', '.wav')):
-            mime_type = "audio/mpeg"
+        if lower_name.endswith('.mp4'): mime_type = "video/mp4"
+        elif lower_name.endswith(('.jpg', '.jpeg', '.png', '.webp')): mime_type = f"image/{lower_name.split('.')[-1].replace('jpg', 'jpeg')}"
+        elif lower_name.endswith('.pdf'): mime_type = "application/pdf"
+        elif lower_name.endswith(('.mp3', '.m4a', '.wav')): mime_type = "audio/mpeg"
 
         if file_size == 0: return JSONResponse(status_code=400, content={"error": "File size is 0 bytes"})
 
-        # 🚀 FOOLPROOF TECHNIQUE 3: Strict Safari/iOS Video Header Fix
+        safe_ascii_name = file_name.encode('ascii', 'ignore').decode('ascii').replace('"', '').replace('\n', '')
+        if not safe_ascii_name: safe_ascii_name = f"file_{message.id}"
+        encoded_name = urllib.parse.quote(file_name)
+        disp_type = "inline" if request.query_params.get("inline") == "true" else "attachment"
+
+        # 🚀 3. Request Range Calculation
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
-        status_code = 200 # 🚨 ডিফল্ট 200 OK (নরমাল ইমেজ/পিডিএফ এর জন্য)
+        status_code = 200
 
         if range_header:
             range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
@@ -536,19 +532,13 @@ async def download_file(message_id: str, file_name: str, request: Request):
                 end_str = range_match.group(2)
                 if end_str:
                     end = int(end_str)
-                status_code = 206 # 🚨 রেঞ্জ রিকোয়েস্ট থাকলে 206 Partial Content
+                status_code = 206 
                 
         if start >= file_size:
             return JSONResponse(status_code=416, content={"error": "Requested Range Not Satisfiable"}, headers={"Content-Range": f"bytes */{file_size}"})
         
         end = min(end, file_size - 1)
         content_length = end - start + 1
-
-        safe_ascii_name = file_name.encode('ascii', 'ignore').decode('ascii').replace('"', '').replace('\n', '')
-        if not safe_ascii_name: safe_ascii_name = f"file_{message.id}"
-        encoded_name = urllib.parse.quote(file_name)
-
-        disp_type = "inline" if request.query_params.get("inline") == "true" else "attachment"
         
         headers = {
             "Accept-Ranges": "bytes",
@@ -556,51 +546,70 @@ async def download_file(message_id: str, file_name: str, request: Request):
             "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
             "Cache-Control": "no-cache" if range_header else "public, max-age=86400",
             "Content-Type": mime_type,
-            "X-Content-Type-Options": "nosniff",
-            "Access-Control-Expose-Headers": "Content-Length, Accept-Ranges"
+            "Access-Control-Expose-Headers": "Content-Length, Accept-Ranges, Content-Range"
         }
         
         if range_header:
             headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-            headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
 
-        # 🚀 ULTRA-STABLE PRO STREAMER: Excat Byte Slicing & Anti-Hang Protection
-        async def ranged_file_streamer():
+        # ==========================================
+        # 🚀 4. RAM Optimized High-Speed Streamer
+        # ==========================================
+        async def memory_safe_streamer():
+            buffer_list = [] # 🧹 RAM Fix: 'b"" + chunk' এর বদলে List ব্যবহার করা হলো (No Memory Duplication)
+            current_buffer_size = 0
+            bytes_sent = 0
+            
+            # ইমেজের জন্য দ্রুত পাঠানো হবে, ভিডিওর জন্য ৫ এমবি বাফার করা হবে
+            is_image = mime_type.startswith('image/')
+            buffer_limit = 1024 * 1024 if is_image else 5 * 1024 * 1024 
+
             try:
-                bytes_sent = 0
-                # টেলিগ্রাম থেকে ডেটা চাঙ্ক (chunk) আকারে টানা হচ্ছে
                 async for chunk in client.stream_media(message, offset=start, limit=content_length):
-                    # ব্রাউজার কানেকশন কেটে দিলে (ইউজার ভিডিও টানলে) সাথে সাথে লুপ ব্রেক হবে
                     if await request.is_disconnected():
                         break
                     
-                    # 🚨 MAGIC FIX: টেলিগ্রাম অনেক সময় রিকোয়েস্টের চেয়ে বেশি ডেটা দিয়ে দেয়। 
-                    # ব্রাউজারকে ঠিক ততটুকু ডেটাই দিতে হবে যতটুকু সে চেয়েছে, এক বাইটও বেশি না।
-                    chunk_len = len(chunk)
-                    if bytes_sent + chunk_len > content_length:
-                        chunk = chunk[:content_length - bytes_sent]
-                        
-                    yield chunk
-                    bytes_sent += len(chunk)
+                    buffer_list.append(chunk)
+                    current_buffer_size += len(chunk)
                     
-                    # 🚨 SERVER HANG FIX: ফাস্ট-ফরওয়ার্ড করার সময় সার্ভার যেন হ্যাং না করে তাই মাইক্রো-স্লিপ
-                    await asyncio.sleep(0.0001)
-                    
-                    if bytes_sent >= content_length:
-                        break
+                    if current_buffer_size >= buffer_limit or (bytes_sent + current_buffer_size >= content_length):
+                        # 🧹 RAM Fix: b"".join() সবচেয়ে কম RAM ব্যবহার করে
+                        joined_chunk = b"".join(buffer_list) 
                         
+                        if bytes_sent + len(joined_chunk) > content_length:
+                            joined_chunk = joined_chunk[:content_length - bytes_sent]
+                            
+                        yield joined_chunk
+                        bytes_sent += len(joined_chunk)
+                        
+                        # 🧹 RAM Fix: লিস্ট সাথে সাথে খালি করা
+                        buffer_list.clear() 
+                        current_buffer_size = 0
+                        del joined_chunk 
+                        
+                        await asyncio.sleep(0.0001) # CPU & RAM Relax
+                        
+                        if bytes_sent >= content_length:
+                            break
+
             except asyncio.CancelledError:
-                # ব্রাউজার ভিডিও টানলে বা প্লেয়ার বন্ধ করলে এই এরর আসে। এটি সম্পূর্ণ নরমাল, তাই ইগনোর করা হলো।
-                pass
+                pass 
             except ConnectionResetError:
                 pass
-            except Exception as e:
-                pass # අනවශ්‍ය কনসোল এরর হাইড করা হলো যাতে সার্ভার ল্যাগ না করে
+            except Exception:
+                pass
+            finally:
+                # 🧹 RAM Fix: ইউজার বের হয়ে গেলে মেমোরি থেকে সব মুছে ফেলা হবে
+                buffer_list.clear()
+                del buffer_list
+                import gc; gc.collect()
 
-        return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
+        return StreamingResponse(memory_safe_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.post("/prepare-zip")
 async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
     try:
