@@ -521,7 +521,7 @@ async def download_file(message_id: str, file_name: str, request: Request):
         range_header = request.headers.get("Range")
         start = 0
         end = file_size - 1
-        status_code = 206 
+        status_code = 200 # 🚨 ডিফল্ট 200 OK (নরমাল ইমেজ/পিডিএফ এর জন্য)
 
         if range_header:
             range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
@@ -530,7 +530,8 @@ async def download_file(message_id: str, file_name: str, request: Request):
                 end_str = range_match.group(2)
                 if end_str:
                     end = int(end_str)
-
+                status_code = 206 # 🚨 রেঞ্জ রিকোয়েস্ট থাকলে 206 Partial Content
+                
         if start >= file_size:
             return JSONResponse(status_code=416, content={"error": "Requested Range Not Satisfiable"}, headers={"Content-Range": f"bytes */{file_size}"})
         
@@ -544,15 +545,18 @@ async def download_file(message_id: str, file_name: str, request: Request):
         disp_type = "inline" if request.query_params.get("inline") == "true" else "attachment"
         
         headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Accept-Ranges": "bytes",
             "Content-Length": str(content_length),
             "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
             "Cache-Control": "no-cache" if range_header else "public, max-age=86400",
             "Content-Type": mime_type,
             "X-Content-Type-Options": "nosniff",
-            "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges"
+            "Access-Control-Expose-Headers": "Content-Length, Accept-Ranges"
         }
+        
+        if range_header:
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+            headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
 
         # 🚀 ULTRA-STABLE STREAMER: Fixed Client, Optimized Chunks, Clean Exit
         async def ranged_file_streamer():
