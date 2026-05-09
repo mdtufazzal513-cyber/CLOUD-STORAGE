@@ -147,7 +147,7 @@ class TelegramCluster:
                         b_api_id, b_api_hash, token = global_api_id, global_api_hash, parts[0].strip()
                         
                     # 🚨 FIX 1: Render-এর জন্য in_memory=True রাখতেই হবে, নাহলে রিস্টার্ট দিলে সব মুছে যাবে!
-                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
+                                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True, flood_sleep_threshold=1)
                     await bot_client.start()
                     
                     # 🚨 FIX 2: HTTP API Force Sync - Peer ID Invalid সমস্যার পার্মানেন্ট সমাধান
@@ -528,74 +528,44 @@ async def download_file(message_id: str, file_name: str, request: Request):
 
         disp_type = "inline" if request.query_params.get("inline") == "true" else "attachment"
         
-        headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(content_length),
-            "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
-            "Cache-Control": "public, max-age=2592000, immutable", # ৩ দিনের জন্য ব্রাউজার ক্যাশ করবে
-            "Content-Type": mime_type,
-            "X-Content-Type-Options": "nosniff"
-        }
+            headers = {
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(content_length),
+        "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
+        "Cache-Control": "no-cache" if range_header else "public, max-age=86400",
+        "Content-Type": mime_type,
+        "X-Content-Type-Options": "nosniff",
+        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges"
+    }
 
-        # 🚀 ULTRA-OPTIMIZED STREAMER: Smooth Video & Fast Image Loading
-        async def ranged_file_streamer():
-            nonlocal client, message
-            current_offset = start
-            limit = content_length
-            yielded_bytes = 0
-            max_retries = 20 
-            chunk_size_limit = 1024 * 1024 # 1MB chunks for stability
+            # 🚀 ULTRA-STABLE STREAMER: Fixed Client, Optimized Chunks, Clean Exit
+    async def ranged_file_streamer():
+        nonlocal client, message
+        current_offset = start
+        remaining_bytes = content_length
+        chunk_size = 262144  # 256KB optimal chunk for smooth buffering
 
-            while yielded_bytes < limit and max_retries > 0:
-                try:
-                    # offset এবং limit হ্যান্ডেল করার সময় Pyrogram এর স্ট্রিমিং অপ্টিমাইজ করা হয়েছে
-                    async for chunk in client.stream_media(message, offset=current_offset, limit=(limit - yielded_bytes)):
-                        if await request.is_disconnected():
-                            return
-                        
-                        yield chunk
-                        chunk_len = len(chunk)
-                        current_offset += chunk_len
-                        yielded_bytes += chunk_len
-                        
-                        if yielded_bytes >= limit:
-                            break
-                            
-                except (asyncio.TimeoutError, Exception) as e:
-                    max_retries -= 1
-                    await asyncio.sleep(0.2)
-                    # অটোমেটিক নতুন বট সেশন ট্রাই করবে যদি সেশন জ্যাম হয়ে যায়
-                    client = tg_cluster.get_next_client()
-                    continue
-                            
-                    if yielded_bytes >= limit:
+        while remaining_bytes > 0:
+            if await request.is_disconnected():
+                return
+
+            fetch_size = min(chunk_size, remaining_bytes)
+
+            try:
+                async for chunk in client.stream_media(message, offset=current_offset, limit=fetch_size):
+                    if await request.is_disconnected():
+                        return
+                    yield chunk
+                    c_len = len(chunk)
+                    current_offset += c_len
+                    remaining_bytes -= c_len
+                    if remaining_bytes <= 0:
                         break
-                        
-                except StopAsyncIteration:
-                    break
-                except asyncio.CancelledError:
-                    return
-                except Exception as e:
-                    max_retries -= 1
-                    if max_retries <= 0:
-                        break
-                    
-                    await asyncio.sleep(0.5) # মাত্র আধা সেকেন্ড (0.5s) অপেক্ষা করে সাথে সাথে নতুন বট দিয়ে হিট করবে
-                    
-                    # 🚀 SMART RECOVERY: আটকে গেলে নতুন বট দিয়ে আবার রিকানেক্ট করবে
-                    try:
-                        client = tg_cluster.get_next_client()
-                        for chat_id, msg_id in targets:
-                            try:
-                                msg = await client.get_messages(chat_id=chat_id, message_ids=msg_id)
-                                if msg and not getattr(msg, "empty", False) and getattr(msg, "media", None):
-                                    message = msg
-                                    break
-                            except Exception: pass
-                    except Exception: pass
-                    
-                    continue
+            except Exception as stream_err:
+                # Stream interrupted, break loop. Browser will retry with new Range if needed.
+                print(f"⚠️ Stream chunk error at offset {current_offset}: {stream_err}")
+                break
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
