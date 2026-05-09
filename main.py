@@ -147,7 +147,7 @@ class TelegramCluster:
                         b_api_id, b_api_hash, token = global_api_id, global_api_hash, parts[0].strip()
                         
                     # 🚨 FIX 1: Render-এর জন্য in_memory=True রাখতেই হবে, নাহলে রিস্টার্ট দিলে সব মুছে যাবে!
-                                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True, flood_sleep_threshold=1)
+                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True, flood_sleep_threshold=1)
                     await bot_client.start()
                     
                     # 🚨 FIX 2: HTTP API Force Sync - Peer ID Invalid সমস্যার পার্মানেন্ট সমাধান
