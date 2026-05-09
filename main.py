@@ -498,7 +498,22 @@ async def download_file(message_id: str, file_name: str, request: Request):
         media = message.document or message.video or message.photo or message.audio
         if not file_name or file_name.strip() == "": file_name = getattr(media, "file_name", f"file_{message.id}")
         file_size = getattr(media, "file_size", 0)
-        mime_type = getattr(media, "mime_type", "application/octet-stream")
+        
+        # 🚨 SMART MIME-TYPE HIJACKING (Forced Browser Support) 🚨
+        import mimetypes
+        guessed_type, _ = mimetypes.guess_type(file_name)
+        mime_type = guessed_type or getattr(media, "mime_type", "application/octet-stream")
+        
+        # Force fixes for common media types that Telegram ruins
+        lower_name = file_name.lower()
+        if lower_name.endswith(('.mp4', '.mkv', '.mov', '.avi')):
+            mime_type = "video/mp4" # Force mp4 for better browser compatibility
+        elif lower_name.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+            mime_type = f"image/{lower_name.split('.')[-1].replace('jpg', 'jpeg')}"
+        elif lower_name.endswith('.pdf'):
+            mime_type = "application/pdf"
+        elif lower_name.endswith(('.mp3', '.m4a', '.wav')):
+            mime_type = "audio/mpeg"
 
         if file_size == 0: return JSONResponse(status_code=400, content={"error": "File size is 0 bytes"})
 
@@ -544,7 +559,7 @@ async def download_file(message_id: str, file_name: str, request: Request):
         nonlocal client, message
         current_offset = start
         remaining_bytes = content_length
-        chunk_size = 262144  # 256KB optimal chunk for smooth buffering
+        chunk_size = 1048576  # 1MB chunk size for smooth video seeking & less stuttering
 
         while remaining_bytes > 0:
             if await request.is_disconnected():
