@@ -564,21 +564,38 @@ async def download_file(message_id: str, file_name: str, request: Request):
             headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
             headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
 
-        # 🚀 ULTRA-STABLE STREAMER: Fixed Client, Optimized Chunks, Clean Exit
+        # 🚀 ULTRA-STABLE PRO STREAMER: Excat Byte Slicing & Anti-Hang Protection
         async def ranged_file_streamer():
             try:
-                # 🚨 FIX: Fast seeking support & Thread blocking fix
+                bytes_sent = 0
+                # টেলিগ্রাম থেকে ডেটা চাঙ্ক (chunk) আকারে টানা হচ্ছে
                 async for chunk in client.stream_media(message, offset=start, limit=content_length):
+                    # ব্রাউজার কানেকশন কেটে দিলে (ইউজার ভিডিও টানলে) সাথে সাথে লুপ ব্রেক হবে
                     if await request.is_disconnected():
                         break
+                    
+                    # 🚨 MAGIC FIX: টেলিগ্রাম অনেক সময় রিকোয়েস্টের চেয়ে বেশি ডেটা দিয়ে দেয়। 
+                    # ব্রাউজারকে ঠিক ততটুকু ডেটাই দিতে হবে যতটুকু সে চেয়েছে, এক বাইটও বেশি না।
+                    chunk_len = len(chunk)
+                    if bytes_sent + chunk_len > content_length:
+                        chunk = chunk[:content_length - bytes_sent]
+                        
                     yield chunk
-                    await asyncio.sleep(0.001) # 🚨 FIX: Event loop context switch! Prevents server hang on rapid video seeking.
+                    bytes_sent += len(chunk)
+                    
+                    # 🚨 SERVER HANG FIX: ফাস্ট-ফরওয়ার্ড করার সময় সার্ভার যেন হ্যাং না করে তাই মাইক্রো-স্লিপ
+                    await asyncio.sleep(0.0001)
+                    
+                    if bytes_sent >= content_length:
+                        break
+                        
             except asyncio.CancelledError:
-                pass # 🚨 Client disconnected intentionally (e.g. scrubbing the video timeline)
+                # ব্রাউজার ভিডিও টানলে বা প্লেয়ার বন্ধ করলে এই এরর আসে। এটি সম্পূর্ণ নরমাল, তাই ইগনোর করা হলো।
+                pass
             except ConnectionResetError:
                 pass
-            except Exception as stream_err:
-                pass # 🚨 Prevent console flood & crash
+            except Exception as e:
+                pass # අනවශ්‍ය কনসোল এরর হাইড করা হলো যাতে সার্ভার ল্যাগ না করে
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
