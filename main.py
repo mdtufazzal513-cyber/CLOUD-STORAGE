@@ -556,31 +556,15 @@ async def download_file(message_id: str, file_name: str, request: Request):
 
         # 🚀 ULTRA-STABLE STREAMER: Fixed Client, Optimized Chunks, Clean Exit
         async def ranged_file_streamer():
-            nonlocal client, message
-            current_offset = start
-            remaining_bytes = content_length
-            chunk_size = 1048576  # 1MB chunk size for smooth video seeking & less stuttering
-
-            while remaining_bytes > 0:
-                if await request.is_disconnected():
-                    return
-
-                fetch_size = min(chunk_size, remaining_bytes)
-
-                try:
-                    async for chunk in client.stream_media(message, offset=current_offset, limit=fetch_size):
-                        if await request.is_disconnected():
-                            return
-                        yield chunk
-                        c_len = len(chunk)
-                        current_offset += c_len
-                        remaining_bytes -= c_len
-                        if remaining_bytes <= 0:
-                            break
-                except Exception as stream_err:
-                    # Stream interrupted, break loop. Browser will retry with new Range if needed.
-                    print(f"⚠️ Stream chunk error at offset {current_offset}: {stream_err}")
-                    break
+            try:
+                # Pyrogram নিজে থেকেই অপটিমাল সাইজে ডাটা চ্যাংক করে। 
+                # আমরা শুধু start থেকে content_length পর্যন্ত কন্টিনিউয়াস স্ট্রিম করবো, এতে টেলিগ্রাম ব্লক করবে না।
+                async for chunk in client.stream_media(message, offset=start, limit=content_length):
+                    if await request.is_disconnected():
+                        break
+                    yield chunk
+            except Exception as stream_err:
+                print(f"⚠️ Stream error: {stream_err}")
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
