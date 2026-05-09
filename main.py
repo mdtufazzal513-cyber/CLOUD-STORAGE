@@ -504,10 +504,16 @@ async def download_file(message_id: str, file_name: str, request: Request):
         guessed_type, _ = mimetypes.guess_type(file_name)
         mime_type = guessed_type or getattr(media, "mime_type", "application/octet-stream")
         
-        # Force fixes for common media types that Telegram ruins
+        # 🚨 FIX: MKV/AVI seek error fix. Forcing MKV to MP4 breaks the browser's index-based byte calculation!
         lower_name = file_name.lower()
-        if lower_name.endswith(('.mp4', '.mkv', '.mov', '.avi')):
-            mime_type = "video/mp4" # Force mp4 for better browser compatibility
+        if lower_name.endswith('.mp4'):
+            mime_type = "video/mp4"
+        elif lower_name.endswith('.mkv'):
+            mime_type = "video/webm" # Browser handles mkv better as webm for seeking
+        elif lower_name.endswith('.mov'):
+            mime_type = "video/quicktime"
+        elif lower_name.endswith('.avi'):
+            mime_type = "video/x-msvideo"
         elif lower_name.endswith(('.jpg', '.jpeg', '.png', '.webp')):
             mime_type = f"image/{lower_name.split('.')[-1].replace('jpg', 'jpeg')}"
         elif lower_name.endswith('.pdf'):
@@ -561,14 +567,18 @@ async def download_file(message_id: str, file_name: str, request: Request):
         # 🚀 ULTRA-STABLE STREAMER: Fixed Client, Optimized Chunks, Clean Exit
         async def ranged_file_streamer():
             try:
-                # Pyrogram নিজে থেকেই অপটিমাল সাইজে ডাটা চ্যাংক করে। 
-                # আমরা শুধু start থেকে content_length পর্যন্ত কন্টিনিউয়াস স্ট্রিম করবো, এতে টেলিগ্রাম ব্লক করবে না।
+                # 🚨 FIX: Fast seeking support & Thread blocking fix
                 async for chunk in client.stream_media(message, offset=start, limit=content_length):
                     if await request.is_disconnected():
                         break
                     yield chunk
+                    await asyncio.sleep(0.001) # 🚨 FIX: Event loop context switch! Prevents server hang on rapid video seeking.
+            except asyncio.CancelledError:
+                pass # 🚨 Client disconnected intentionally (e.g. scrubbing the video timeline)
+            except ConnectionResetError:
+                pass
             except Exception as stream_err:
-                print(f"⚠️ Stream error: {stream_err}")
+                pass # 🚨 Prevent console flood & crash
 
         return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
