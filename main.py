@@ -50,8 +50,9 @@ from typing import List, Any
 class BulkDeleteRequest(BaseModel):
     message_ids: List[Any]
 
-# Video streaming requires unlimited concurrency. Semaphore removed for superfast speed.
-MESSAGE_CACHE = {} # 🚀 Blazing Fast Cache System
+# সার্ভারের ওপর চাপ কমানোর জন্য ট্রাফিক কন্ট্রোলার (Android Download Manager multiple thread support)
+MAX_CONCURRENT_DOWNLOADS = 15
+download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 app = FastAPI()
 
@@ -147,7 +148,7 @@ class TelegramCluster:
                         b_api_id, b_api_hash, token = global_api_id, global_api_hash, parts[0].strip()
                         
                     # 🚨 FIX 1: Render-এর জন্য in_memory=True রাখতেই হবে, নাহলে রিস্টার্ট দিলে সব মুছে যাবে!
-                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True, sleep_threshold=1)
+                    bot_client = Client(f"cloud_bot_{idx}", api_id=b_api_id, api_hash=b_api_hash, bot_token=token, in_memory=True)
                     await bot_client.start()
                     
                     # 🚨 FIX 2: HTTP API Force Sync - Peer ID Invalid সমস্যার পার্মানেন্ট সমাধান
@@ -456,159 +457,87 @@ async def upload_file(request: Request, file: UploadFile = File(...), user_token
             try: os.remove(file_path)
             except: pass
 
-# --- Resumable Download System (Pause/Resume Support & RAM Optimized) ---
+# --- Resumable Download System (Pause/Resume Support) ---
 @app.get("/download/{message_id}/{file_name:path}")
-async def download_file(message_id: str, file_name: str, request: Request, background_tasks: BackgroundTasks):
+async def download_file(message_id: str, file_name: str, request: Request):
+    global active_tasks
+    if active_tasks >= MAX_ACTIVE_TASKS:
+        return JSONResponse(status_code=503, content={"error": "Server is busy. Please wait a moment."})
+    
+    active_tasks += 1
     try:
-        # 🚀 1. Round-Robin Load Balancing
         client = tg_cluster.get_next_client()
         if not client: raise Exception("No Telegram sessions available!")
 
+        # Parse new multi-channel payload (JSON) and fallback legacy ID
         targets = []
         try:
             payload = json.loads(urllib.parse.unquote(message_id))
+            # 🚨 ইন্টিজার (int) কাস্টিং করা হলো, নাহলে Pyrogram এরর দেবে
             targets.append((int(tg_cluster.primary_channel), int(payload.get("primary"))))
-            for b in payload.get("backups",[]):
+            for b in payload.get("backups", []):
                 targets.append((int(b["channel"]), int(b["msg_id"])))
         except Exception:
             targets.append((int(tg_cluster.primary_channel), int(message_id)))
 
         message = None
-        
-        # 🧹 RAM Fix: Cache cleanup (Prevent Memory Leak)
-        cache_key = f"{id(client)}_{message_id}"
-        if len(MESSAGE_CACHE) > 2000: 
-            MESSAGE_CACHE.clear()
-            import gc; gc.collect() # Force Garbage Collection
-            
-        if cache_key in MESSAGE_CACHE and (time.time() - MESSAGE_CACHE[cache_key]['time']) < 3600:
-            message = MESSAGE_CACHE[cache_key]['msg']
-        else:
-            for chat_id, msg_id in targets:
-                try:
-                    msg = await client.get_messages(chat_id=chat_id, message_ids=msg_id)
-                    if msg and not getattr(msg, "empty", False) and getattr(msg, "media", None):
-                        message = msg
-                        MESSAGE_CACHE[cache_key] = {'msg': msg, 'time': time.time()}
-                        break 
-                except Exception:
-                    continue
+        # 🚨 Smart Round-Robin Fallback: প্রাইমারি ফেইল করলে ব্যাকআপগুলো চেক করবে
+        for chat_id, msg_id in targets:
+            try:
+                msg = await client.get_messages(chat_id=chat_id, message_ids=msg_id)
+                if msg and not getattr(msg, "empty", False) and getattr(msg, "media", None):
+                    message = msg
+                    break # ফাইল পাওয়া গেছে! লুপ ব্রেক।
+            except Exception as e:
+                print(f"⚠️ Fallback Active: Failed in {chat_id}, trying next... Error: {e}")
+                continue
 
         if not message:
-            return JSONResponse(status_code=404, content={"error": "File lost from cloud."})
+            return JSONResponse(status_code=404, content={"error": "File totally lost! Not found in primary or any backup channels."})
 
-        media = message.document or message.video or message.photo or message.audio
+        media = message.document or message.video or message.photo
         if not file_name or file_name.strip() == "": file_name = getattr(media, "file_name", f"file_{message.id}")
         file_size = getattr(media, "file_size", 0)
-        
-        # 🚀 2. Strict MIME Type Detection
-        import mimetypes
-        guessed_type, _ = mimetypes.guess_type(file_name)
-        mime_type = guessed_type or getattr(media, "mime_type", "application/octet-stream")
-        
-        lower_name = file_name.lower()
-        if lower_name.endswith('.mp4'): mime_type = "video/mp4"
-        elif lower_name.endswith(('.jpg', '.jpeg', '.png', '.webp')): mime_type = f"image/{lower_name.split('.')[-1].replace('jpg', 'jpeg')}"
-        elif lower_name.endswith('.pdf'): mime_type = "application/pdf"
-        elif lower_name.endswith(('.mp3', '.m4a', '.wav')): mime_type = "audio/mpeg"
+        mime_type = getattr(media, "mime_type", "application/octet-stream")
 
         if file_size == 0: return JSONResponse(status_code=400, content={"error": "File size is 0 bytes"})
 
-        safe_ascii_name = file_name.encode('ascii', 'ignore').decode('ascii').replace('"', '').replace('\n', '')
-        if not safe_ascii_name: safe_ascii_name = f"file_{message.id}"
-        encoded_name = urllib.parse.quote(file_name)
-        disp_type = "inline" if request.query_params.get("inline") == "true" else "attachment"
-
-        # 🚀 3. Request Range Calculation
         range_header = request.headers.get("Range")
-        start = 0
-        end = file_size - 1
-        status_code = 200
-
+        start = 0; end = file_size - 1; status_code = 200
         if range_header:
             range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
             if range_match:
                 start = int(range_match.group(1))
                 end_str = range_match.group(2)
-                if end_str:
-                    end = int(end_str)
+                end = int(end_str) if end_str else file_size - 1
                 status_code = 206 
-                
-        if start >= file_size:
-            return JSONResponse(status_code=416, content={"error": "Requested Range Not Satisfiable"}, headers={"Content-Range": f"bytes */{file_size}"})
-        
-        end = min(end, file_size - 1)
-        content_length = end - start + 1
-        
+
+        safe_ascii_name = file_name.encode('ascii', 'ignore').decode('ascii').replace('"', '').replace('\n', '')
+        if not safe_ascii_name: safe_ascii_name = f"file_{message.id}"
+        encoded_name = urllib.parse.quote(file_name)
+
         headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
             "Accept-Ranges": "bytes",
-            "Content-Length": str(content_length),
-            "Content-Disposition": f'{disp_type}; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}',
-            "Cache-Control": "no-cache" if range_header else "public, max-age=86400",
-            "Content-Type": mime_type,
-            "Access-Control-Expose-Headers": "Content-Length, Accept-Ranges, Content-Range"
+            "Content-Length": str(end - start + 1),
+            "Content-Disposition": f'attachment; filename="{safe_ascii_name}"; filename*=utf-8\'\'{encoded_name}'
         }
-        
-        if range_header:
-            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
-        # ==========================================
-        # 🚀 4. RAM Optimized High-Speed Streamer
-        # ==========================================
-        async def memory_safe_streamer():
-            buffer_list = [] # 🧹 RAM Fix: 'b"" + chunk' এর বদলে List ব্যবহার করা হলো (No Memory Duplication)
-            current_buffer_size = 0
-            bytes_sent = 0
-            
-            # ইমেজের জন্য দ্রুত পাঠানো হবে, ভিডিওর জন্য ৫ এমবি বাফার করা হবে
-            is_image = mime_type.startswith('image/')
-            buffer_limit = 1024 * 1024 if is_image else 5 * 1024 * 1024 
+        async def ranged_file_streamer():
+            async with download_semaphore: 
+                try:
+                    async for chunk in client.stream_media(message, offset=start, limit=(end - start + 1)):
+                        if await request.is_disconnected(): break
+                        yield chunk
+                except asyncio.CancelledError: pass
+                except Exception as e: print(f"Stream interrupted: {e}")
 
-            try:
-                async for chunk in client.stream_media(message, offset=start, limit=content_length):
-                    if await request.is_disconnected():
-                        break
-                    
-                    buffer_list.append(chunk)
-                    current_buffer_size += len(chunk)
-                    
-                    if current_buffer_size >= buffer_limit or (bytes_sent + current_buffer_size >= content_length):
-                        # 🧹 RAM Fix: b"".join() সবচেয়ে কম RAM ব্যবহার করে
-                        joined_chunk = b"".join(buffer_list) 
-                        
-                        if bytes_sent + len(joined_chunk) > content_length:
-                            joined_chunk = joined_chunk[:content_length - bytes_sent]
-                            
-                        yield joined_chunk
-                        bytes_sent += len(joined_chunk)
-                        
-                        # 🧹 RAM Fix: লিস্ট সাথে সাথে খালি করা
-                        buffer_list.clear() 
-                        current_buffer_size = 0
-                        del joined_chunk 
-                        
-                        await asyncio.sleep(0.0001) # CPU & RAM Relax
-                        
-                        if bytes_sent >= content_length:
-                            break
-
-            except asyncio.CancelledError:
-                pass 
-            except ConnectionResetError:
-                pass
-            except Exception:
-                pass
-            finally:
-                # 🧹 RAM Fix: ইউজার বের হয়ে গেলে মেমোরি থেকে সব মুছে ফেলা হবে
-                buffer_list.clear()
-                del buffer_list
-                import gc; gc.collect()
-
-        return StreamingResponse(memory_safe_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
+        return StreamingResponse(ranged_file_streamer(), status_code=status_code, headers=headers, media_type=mime_type)
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
+        return JSONResponse(status_code=500, content={"error": f"Internal Error: {str(e)}"})
+    finally:
+        active_tasks -= 1
 
 @app.post("/prepare-zip")
 async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = Form(...), user_token: dict = Depends(verify_token)):
