@@ -645,6 +645,28 @@ async def prepare_zip_folder(folder_name: str = Form(...), files_data: str = For
         print(f"Zip Error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.get("/get-stream-link/{message_id}")
+async def get_stream_link(message_id: str):
+    try:
+        config_ref = fb_db.reference('system_settings/telegram_config').get()
+        stream_url = config_ref.get('stream_url', '') if config_ref else ''
+        stream_secret = config_ref.get('stream_secret', 'my_secure_secret_123') if config_ref else 'my_secure_secret_123'
+        
+        if not stream_url:
+            return JSONResponse(status_code=400, content={"error": "Streaming is not configured. Please ask admin to set Stream URL."})
+        
+        try:
+            payload = json.loads(urllib.parse.unquote(message_id))
+            primary_id = payload.get("primary")
+        except Exception:
+            primary_id = int(message_id)
+            
+        # Custom token based auth bypass for Go Bot (will be updated in Go code later)
+        final_url = f"{stream_url.rstrip('/')}/stream/{primary_id}?token={stream_secret}"
+        return {"status": "success", "stream_url": final_url}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.get("/download-ready-zip/{zip_id}/{file_name:path}")
 async def download_ready_zip(zip_id: str, file_name: str):
     zip_filepath = os.path.join(UPLOAD_DIR, f"temp_zip_{zip_id}.zip")
