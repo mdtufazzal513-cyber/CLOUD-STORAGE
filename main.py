@@ -323,7 +323,7 @@ async def startup():
         if admin_uids_str:
             admin_list = [uid.strip() for uid in admin_uids_str.split(",")]
             admin_updates = {uid: True for uid in admin_list if uid}
-            fb_db.reference('admins').set(admin_updates)
+            fb_db.reference('admins').update(admin_updates)
             print("👑 Admin UIDs automatically synced to Firebase Database!")
     except Exception as e:
         print(f"Error syncing admins: {e}")
